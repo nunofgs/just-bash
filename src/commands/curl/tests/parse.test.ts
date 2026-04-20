@@ -12,6 +12,7 @@ import {
   vi,
 } from "vitest";
 import { Bash } from "../../../Bash.js";
+import { getRequestBodyText } from "./request-body-test-helpers.js";
 
 const originalFetch = global.fetch;
 let lastRequest: { url: string; options: RequestInit } | null = null;
@@ -145,7 +146,9 @@ describe("curl option parsing", () => {
         'curl -s --data-urlencode "name=John Doe" https://api.example.com/test',
       );
       expect(result.exitCode).toBe(0);
-      expect(lastRequest?.options.body).toContain("John%20Doe");
+      expect(getRequestBodyText(lastRequest?.options.body)).toContain(
+        "John%20Doe",
+      );
     });
 
     it("should handle --data-urlencode=value form", async () => {
@@ -154,7 +157,9 @@ describe("curl option parsing", () => {
         'curl -s --data-urlencode="foo=bar baz" https://api.example.com/test',
       );
       expect(result.exitCode).toBe(0);
-      expect(lastRequest?.options.body).toContain("bar%20baz");
+      expect(getRequestBodyText(lastRequest?.options.body)).toContain(
+        "bar%20baz",
+      );
     });
 
     it("should append multiple --data-urlencode values", async () => {
@@ -163,7 +168,7 @@ describe("curl option parsing", () => {
         'curl -s --data-urlencode "a=1" --data-urlencode "b=2" https://api.example.com/test',
       );
       expect(result.exitCode).toBe(0);
-      expect(lastRequest?.options.body).toContain("&");
+      expect(getRequestBodyText(lastRequest?.options.body)).toContain("&");
     });
 
     it("should encode special characters", async () => {
@@ -173,7 +178,7 @@ describe("curl option parsing", () => {
       );
       expect(result.exitCode).toBe(0);
       // & in value should be encoded
-      expect(lastRequest?.options.body).toContain("%26");
+      expect(getRequestBodyText(lastRequest?.options.body)).toContain("%26");
     });
   });
 
@@ -278,7 +283,7 @@ describe("curl option parsing", () => {
         'curl -d"test=value" https://api.example.com/test',
       );
       expect(result.exitCode).toBe(0);
-      expect(lastRequest?.options.body).toBe("test=value");
+      expect(getRequestBodyText(lastRequest?.options.body)).toBe("test=value");
     });
 
     it("should parse --data=value", async () => {
@@ -287,7 +292,7 @@ describe("curl option parsing", () => {
         'curl --data="test=value" https://api.example.com/test',
       );
       expect(result.exitCode).toBe(0);
-      expect(lastRequest?.options.body).toBe("test=value");
+      expect(getRequestBodyText(lastRequest?.options.body)).toBe("test=value");
     });
 
     it("should parse --data-raw=value", async () => {
@@ -297,7 +302,7 @@ describe("curl option parsing", () => {
       );
       expect(result.exitCode).toBe(0);
       // --data-raw treats @ literally
-      expect(lastRequest?.options.body).toBe("@literal");
+      expect(getRequestBodyText(lastRequest?.options.body)).toBe("@literal");
     });
 
     it("should parse --data-binary=value", async () => {
@@ -306,7 +311,7 @@ describe("curl option parsing", () => {
         'curl --data-binary="binary data" https://api.example.com/test',
       );
       expect(result.exitCode).toBe(0);
-      expect(lastRequest?.options.body).toBe("binary data");
+      expect(getRequestBodyText(lastRequest?.options.body)).toBe("binary data");
     });
   });
 });

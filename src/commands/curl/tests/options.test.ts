@@ -12,6 +12,7 @@ import {
   vi,
 } from "vitest";
 import { Bash } from "../../../Bash.js";
+import { getRequestBodyText } from "./request-body-test-helpers.js";
 
 const originalFetch = global.fetch;
 let lastRequest: { url: string; options: RequestInit } | null = null;
@@ -166,7 +167,7 @@ describe("curl options", () => {
       });
       await env.exec('curl -d "name=value" https://api.example.com/test');
       expect(lastRequest?.options.method).toBe("POST");
-      expect(lastRequest?.options.body).toBe("name=value");
+      expect(getRequestBodyText(lastRequest?.options.body)).toBe("name=value");
     });
 
     it("sends JSON with --data-raw", async () => {
@@ -179,7 +180,9 @@ describe("curl options", () => {
       await env.exec(
         'curl --data-raw \'{"key": "value"}\' https://api.example.com/test',
       );
-      expect(lastRequest?.options.body).toBe('{"key": "value"}');
+      expect(getRequestBodyText(lastRequest?.options.body)).toBe(
+        '{"key": "value"}',
+      );
     });
 
     it("sends data with --data=value format", async () => {
@@ -190,7 +193,7 @@ describe("curl options", () => {
         },
       });
       await env.exec('curl --data="foo=bar" https://api.example.com/test');
-      expect(lastRequest?.options.body).toBe("foo=bar");
+      expect(getRequestBodyText(lastRequest?.options.body)).toBe("foo=bar");
     });
   });
 

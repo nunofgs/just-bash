@@ -12,6 +12,7 @@ import {
   vi,
 } from "vitest";
 import { Bash } from "../../../Bash.js";
+import { getRequestBodyText } from "./request-body-test-helpers.js";
 
 const originalFetch = global.fetch;
 let lastRequest: { url: string; options: RequestInit } | null = null;
@@ -50,7 +51,9 @@ describe("curl form data", () => {
         "curl --data-urlencode 'message=hello world' https://api.example.com/post",
       );
 
-      expect(lastRequest?.options.body).toBe("message=hello%20world");
+      expect(getRequestBodyText(lastRequest?.options.body)).toBe(
+        "message=hello%20world",
+      );
     });
 
     it("encodes special characters", async () => {
@@ -64,7 +67,9 @@ describe("curl form data", () => {
         "curl --data-urlencode 'data=a&b=c' https://api.example.com/post",
       );
 
-      expect(lastRequest?.options.body).toBe("data=a%26b%3Dc");
+      expect(getRequestBodyText(lastRequest?.options.body)).toBe(
+        "data=a%26b%3Dc",
+      );
     });
 
     it("appends multiple --data-urlencode values", async () => {
@@ -78,7 +83,7 @@ describe("curl form data", () => {
         "curl --data-urlencode 'a=1' --data-urlencode 'b=2' https://api.example.com/post",
       );
 
-      expect(lastRequest?.options.body).toBe("a=1&b=2");
+      expect(getRequestBodyText(lastRequest?.options.body)).toBe("a=1&b=2");
     });
   });
 
@@ -94,7 +99,9 @@ describe("curl form data", () => {
         'curl --data-binary "line1\\nline2" https://api.example.com/post',
       );
 
-      expect(lastRequest?.options.body).toBe("line1\\nline2");
+      expect(getRequestBodyText(lastRequest?.options.body)).toBe(
+        "line1\\nline2",
+      );
     });
 
     it("supports --data-binary=value format", async () => {
@@ -106,7 +113,7 @@ describe("curl form data", () => {
       });
       await env.exec("curl --data-binary=rawdata https://api.example.com/post");
 
-      expect(lastRequest?.options.body).toBe("rawdata");
+      expect(getRequestBodyText(lastRequest?.options.body)).toBe("rawdata");
     });
   });
 
@@ -124,8 +131,9 @@ describe("curl form data", () => {
       expect(headers.get("Content-Type")).toMatch(
         /^multipart\/form-data; boundary=/,
       );
-      expect(lastRequest?.options.body).toContain('name="name"');
-      expect(lastRequest?.options.body).toContain("John");
+      const body = getRequestBodyText(lastRequest?.options.body);
+      expect(body).toContain('name="name"');
+      expect(body).toContain("John");
     });
 
     it("sends multiple form fields", async () => {
@@ -139,7 +147,7 @@ describe("curl form data", () => {
         "curl -F 'first=John' -F 'last=Doe' https://api.example.com/upload",
       );
 
-      const body = lastRequest?.options.body as string;
+      const body = getRequestBodyText(lastRequest?.options.body);
       expect(body).toContain('name="first"');
       expect(body).toContain("John");
       expect(body).toContain('name="last"');
@@ -158,7 +166,7 @@ describe("curl form data", () => {
         "curl -F 'file=@/data.txt' https://api.example.com/upload",
       );
 
-      const body = lastRequest?.options.body as string;
+      const body = getRequestBodyText(lastRequest?.options.body);
       expect(body).toContain('name="file"');
       expect(body).toContain('filename="data.txt"');
       expect(body).toContain("file contents here");
@@ -176,7 +184,7 @@ describe("curl form data", () => {
         "curl -F 'data=@/doc.json;type=application/json' https://api.example.com/upload",
       );
 
-      const body = lastRequest?.options.body as string;
+      const body = getRequestBodyText(lastRequest?.options.body);
       expect(body).toContain("Content-Type: application/json");
     });
   });

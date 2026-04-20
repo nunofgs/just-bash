@@ -32,6 +32,7 @@ import {
   mapToRecordWithExtras,
   mergeToNullPrototype,
 } from "./helpers/env.js";
+import { normalizeSourceTextToBytes } from "./helpers/source-text.js";
 import {
   ArithmeticError,
   ExecutionAbortedError,
@@ -620,9 +621,9 @@ export class Bash {
     // Normalize indented multi-line scripts (unless rawScript is true)
     // This allows writing indented bash scripts in template literals
     // BUT we must preserve whitespace inside heredoc content
-    let normalized = commandLine;
+    let normalized = normalizeSourceTextToBytes(commandLine);
     if (!options?.rawScript) {
-      normalized = normalizeScript(commandLine);
+      normalized = normalizeScript(normalized);
     }
 
     // Activate defense-in-depth box if configured

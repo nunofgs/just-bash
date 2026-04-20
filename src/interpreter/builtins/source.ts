@@ -2,6 +2,7 @@
  * source/. - Execute commands from a file in current environment builtin
  */
 
+import { normalizeSourceTextToBytes } from "../../helpers/source-text.js";
 import { type ParseException, parse } from "../../parser/parser.js";
 import type { ExecResult } from "../../types.js";
 import { ExecutionLimitError, ExitError, ReturnError } from "../errors.js";
@@ -124,7 +125,7 @@ export async function handleSource(
   // Set current source to the file being sourced (for function definitions)
   ctx.state.currentSource = filename;
   try {
-    const ast = parse(content);
+    const ast = parse(normalizeSourceTextToBytes(content));
     const result = await ctx.executeScript(ast);
     cleanup();
     return result;

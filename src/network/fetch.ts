@@ -56,7 +56,7 @@ const REDIRECT_CODES = new Set([301, 302, 303, 307, 308]);
 export interface SecureFetchOptions {
   method?: string;
   headers?: Headers | Record<string, string>;
-  body?: string;
+  body?: string | Uint8Array;
   followRedirects?: boolean;
   /** Override timeout for this request (capped at global timeout) */
   timeoutMs?: number;
@@ -69,6 +69,16 @@ export type SecureFetch = (
   url: string,
   options?: SecureFetchOptions,
 ) => Promise<FetchResult>;
+
+function bodyToRequestInit(
+  body: string | Uint8Array,
+): Exclude<RequestInit["body"], null | undefined> {
+  if (typeof body === "string") {
+    return body;
+  }
+
+  return Uint8Array.from(body).buffer;
+}
 
 /**
  * Creates a secure fetch function that enforces the allow-list.
@@ -257,8 +267,8 @@ export function createSecureFetch(config: NetworkConfig): SecureFetch {
           };
 
           // Only include body for methods that support it
-          if (options.body && !BODYLESS_METHODS.has(method)) {
-            fetchOptions.body = options.body;
+          if (options.body !== undefined && !BODYLESS_METHODS.has(method)) {
+            fetchOptions.body = bodyToRequestInit(options.body);
           }
 
           return fetch(currentUrl, fetchOptions);

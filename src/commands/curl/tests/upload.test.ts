@@ -12,6 +12,7 @@ import {
   vi,
 } from "vitest";
 import { Bash } from "../../../Bash.js";
+import { getRequestBodyText } from "./request-body-test-helpers.js";
 
 const originalFetch = global.fetch;
 let lastRequest: { url: string; options: RequestInit } | null = null;
@@ -52,7 +53,9 @@ describe("curl upload", () => {
       );
 
       expect(lastRequest?.options.method).toBe("PUT");
-      expect(lastRequest?.options.body).toBe("upload content");
+      expect(getRequestBodyText(lastRequest?.options.body)).toBe(
+        "upload content",
+      );
     });
 
     it("uploads file with --upload-file", async () => {
@@ -68,7 +71,7 @@ describe("curl upload", () => {
       );
 
       expect(lastRequest?.options.method).toBe("PUT");
-      expect(lastRequest?.options.body).toBe("binary data");
+      expect(getRequestBodyText(lastRequest?.options.body)).toBe("binary data");
     });
 
     it("supports --upload-file=value format", async () => {
@@ -83,7 +86,7 @@ describe("curl upload", () => {
         "curl --upload-file=/file.txt https://api.example.com/files/file.txt",
       );
 
-      expect(lastRequest?.options.body).toBe("file data");
+      expect(getRequestBodyText(lastRequest?.options.body)).toBe("file data");
     });
 
     it("allows explicit method override with -X", async () => {
@@ -99,7 +102,7 @@ describe("curl upload", () => {
       );
 
       expect(lastRequest?.options.method).toBe("POST");
-      expect(lastRequest?.options.body).toBe("content");
+      expect(getRequestBodyText(lastRequest?.options.body)).toBe("content");
     });
 
     it("fails if file does not exist", async () => {

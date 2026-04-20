@@ -2,25 +2,52 @@
  * Form data handling for curl command
  */
 
+import { toBuffer } from "../../fs/encoding.js";
 import type { FormField } from "./types.js";
+
+function isUnreservedByte(byte: number): boolean {
+  return (
+    (byte >= 0x30 && byte <= 0x39) || // 0-9
+    (byte >= 0x41 && byte <= 0x5a) || // A-Z
+    (byte >= 0x61 && byte <= 0x7a) || // a-z
+    byte === 0x2d || // -
+    byte === 0x2e || // .
+    byte === 0x5f || // _
+    byte === 0x7e // ~
+  );
+}
 
 /**
  * URL-encode form data in curl's --data-urlencode format
  * Supports: name=content, =content, name@file, @file
  */
 export function encodeFormData(input: string): string {
+  const encodeBinaryString = (value: string): string => {
+    let encoded = "";
+
+    for (const byte of toBuffer(value, "binary")) {
+      if (isUnreservedByte(byte)) {
+        encoded += String.fromCharCode(byte);
+      } else {
+        encoded += `%${byte.toString(16).toUpperCase().padStart(2, "0")}`;
+      }
+    }
+
+    return encoded;
+  };
+
   // Check for name=value format
   const eqIndex = input.indexOf("=");
   if (eqIndex >= 0) {
     const name = input.slice(0, eqIndex);
     const value = input.slice(eqIndex + 1);
     if (name) {
-      return `${encodeURIComponent(name)}=${encodeURIComponent(value)}`;
+      return `${encodeBinaryString(name)}=${encodeBinaryString(value)}`;
     }
-    return encodeURIComponent(value);
+    return encodeBinaryString(value);
   }
   // Plain value
-  return encodeURIComponent(input);
+  return encodeBinaryString(input);
 }
 
 /**
@@ -64,33 +91,47 @@ export function parseFormField(spec: string): FormField | null {
  */
 export function generateMultipartBody(
   fields: FormField[],
-  fileContents: Map<string, string>,
-): { body: string; boundary: string } {
+  fileContents: Map<string, Uint8Array>,
+): { body: Uint8Array; boundary: string } {
   const boundary = `----CurlFormBoundary${Date.now().toString(36)}`;
-  const parts: string[] = [];
+  const parts: Uint8Array[] = [];
 
   for (const field of fields) {
-    let value = field.value;
+    const value = field.value;
 
     // Replace file references with content
     if (value.startsWith("@") || value.startsWith("<")) {
       const filePath = value.slice(1);
-      value = fileContents.get(filePath) ?? "";
+      const fileContent = fileContents.get(filePath) ?? new Uint8Array();
+      let headers = `--${boundary}\r\n`;
+      headers += `Content-Disposition: form-data; name="${field.name}"; filename="${field.filename}"\r\n`;
+      if (field.contentType) {
+        headers += `Content-Type: ${field.contentType}\r\n`;
+      }
+      headers += "\r\n";
+      parts.push(
+        toBuffer(headers, "binary"),
+        fileContent,
+        toBuffer("\r\n", "binary"),
+      );
+      continue;
     }
 
     let part = `--${boundary}\r\n`;
-    if (field.filename) {
-      part += `Content-Disposition: form-data; name="${field.name}"; filename="${field.filename}"\r\n`;
-      if (field.contentType) {
-        part += `Content-Type: ${field.contentType}\r\n`;
-      }
-    } else {
-      part += `Content-Disposition: form-data; name="${field.name}"\r\n`;
-    }
+    part += `Content-Disposition: form-data; name="${field.name}"\r\n`;
     part += `\r\n${value}\r\n`;
-    parts.push(part);
+    parts.push(toBuffer(part, "binary"));
   }
 
-  parts.push(`--${boundary}--\r\n`);
-  return { body: parts.join(""), boundary };
+  parts.push(toBuffer(`--${boundary}--\r\n`, "binary"));
+
+  const totalLength = parts.reduce((sum, chunk) => sum + chunk.length, 0);
+  const body = new Uint8Array(totalLength);
+  let offset = 0;
+  for (const chunk of parts) {
+    body.set(chunk, offset);
+    offset += chunk.length;
+  }
+
+  return { body, boundary };
 }

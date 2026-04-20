@@ -12,6 +12,10 @@ import {
   vi,
 } from "vitest";
 import { Bash } from "../../../Bash.js";
+import {
+  getRequestBodyBytes,
+  getRequestBodyText,
+} from "./request-body-test-helpers.js";
 
 const originalFetch = global.fetch;
 let lastRequest: { url: string; options: RequestInit } | null = null;
@@ -119,7 +123,9 @@ describe("curl binary data", () => {
       );
 
       // Note: shell escaping means \n is literal backslash-n, not newline
-      expect(lastRequest?.options.body).toBe("line1\\nline2");
+      expect(getRequestBodyText(lastRequest?.options.body)).toBe(
+        "line1\\nline2",
+      );
     });
 
     it("uploads binary file content with -T", async () => {
@@ -138,7 +144,7 @@ describe("curl binary data", () => {
       });
       await env.exec("curl -T /data.bin https://api.example.com/upload");
 
-      expect(lastRequest?.options.body).toBe(binaryContent);
+      expect(getRequestBodyText(lastRequest?.options.body)).toBe(binaryContent);
     });
 
     it("uploads file with binary content in form field", async () => {
@@ -159,7 +165,7 @@ describe("curl binary data", () => {
         "curl -F 'file=@/upload.bin' https://api.example.com/upload",
       );
 
-      const body = lastRequest?.options.body as string;
+      const body = getRequestBodyText(lastRequest?.options.body);
       expect(body).toContain(binaryContent);
     });
   });
@@ -184,7 +190,11 @@ describe("curl binary data", () => {
       });
       await env.exec("curl -T /binary.bin https://api.example.com/upload");
 
-      expect(lastRequest?.options.body).toBe("Hello\0World");
+      expect(getRequestBodyBytes(lastRequest?.options.body)).toEqual(
+        new Uint8Array([
+          0x48, 0x65, 0x6c, 0x6c, 0x6f, 0x00, 0x57, 0x6f, 0x72, 0x6c, 0x64,
+        ]),
+      );
     });
   });
 });

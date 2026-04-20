@@ -5,7 +5,7 @@
  * Network access must be explicitly configured via BashEnvOptions.network.
  */
 
-import { fromBuffer } from "../../fs/encoding.js";
+import { fromBuffer, toBuffer } from "../../fs/encoding.js";
 import { getErrorMessage } from "../../interpreter/helpers/errors.js";
 import { _Headers } from "../../security/trusted-globals.js";
 import type { Command, CommandContext, ExecResult } from "../../types.js";
@@ -26,28 +26,28 @@ import type { CurlOptions } from "./types.js";
 async function prepareRequestBody(
   options: CurlOptions,
   ctx: CommandContext,
-): Promise<{ body?: string; contentType?: string }> {
+): Promise<{ body?: Uint8Array; contentType?: string }> {
   // Handle -T/--upload-file
   if (options.uploadFile) {
     const filePath = ctx.fs.resolvePath(ctx.cwd, options.uploadFile);
-    const content = await ctx.fs.readFile(filePath);
+    const content = await ctx.fs.readFileBuffer(filePath);
     return { body: content };
   }
 
   // Handle -F/--form multipart data
   if (options.formFields.length > 0) {
-    const fileContents = new Map<string, string>();
+    const fileContents = new Map<string, Uint8Array>();
 
     // Read any file references
     for (const field of options.formFields) {
       if (field.value.startsWith("@") || field.value.startsWith("<")) {
         const filePath = ctx.fs.resolvePath(ctx.cwd, field.value.slice(1));
         try {
-          const content = await ctx.fs.readFile(filePath);
+          const content = await ctx.fs.readFileBuffer(filePath);
           fileContents.set(field.value.slice(1), content);
         } catch {
-          // File not found, use empty string
-          fileContents.set(field.value.slice(1), "");
+          // File not found, use empty content
+          fileContents.set(field.value.slice(1), new Uint8Array());
         }
       }
     }
@@ -64,7 +64,7 @@ async function prepareRequestBody(
 
   // Handle -d/--data variants
   if (options.data !== undefined) {
-    return { body: options.data };
+    return { body: toBuffer(options.data, "binary") };
   }
 
   // @banned-pattern-ignore: returns typed object with known keys (body, contentType), not user data
