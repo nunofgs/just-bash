@@ -15,6 +15,7 @@ import type {
   WordNode,
   WordPart,
 } from "../ast/types.js";
+import { latin1FromBytes, stdoutAsBytes } from "../encoding.js";
 import { parseArithmeticExpression } from "../parser/arithmetic-parser.js";
 import { Parser } from "../parser/parser.js";
 import { GlobExpander } from "../shell/glob.js";
@@ -789,7 +790,14 @@ async function expandPart(
         }
         ctx.state.bashPid = savedBashPid;
         ctx.substitutionDepth = savedDepth;
-        const output = result.stdout.replace(/\n+$/, "");
+        // Coerce to byte-shape via the result's own kind tag. A text-tagged
+        // substituted command returns real Unicode codepoints; the shell
+        // pipeline holds byte-shape strings, so encode once here. A
+        // bytes-tagged result passes through verbatim. Without this the
+        // substitution value would be a raw text string that downstream
+        // redirects/pipes would re-encode incorrectly.
+        const outputBytes = latin1FromBytes(stdoutAsBytes(result));
+        const output = outputBytes.replace(/\n+$/, "");
         // Check string length limit for command substitution output
         checkStringLength(
           output,
@@ -817,7 +825,12 @@ async function expandPart(
             ctx.state.expansionStderr =
               (ctx.state.expansionStderr || "") + error.stderr;
           }
-          const exitOutput = error.stdout.replace(/\n+$/, "");
+          // ExitError doesn't carry a kind tag; let `stdoutAsBytes` sniff
+          // (full scan) so an untagged Unicode buffer is encoded once.
+          const exitBytes = latin1FromBytes(
+            stdoutAsBytes({ stdout: error.stdout }),
+          );
+          const exitOutput = exitBytes.replace(/\n+$/, "");
           // Check string length limit for command substitution output
           checkStringLength(
             exitOutput,

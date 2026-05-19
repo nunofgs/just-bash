@@ -20,6 +20,12 @@ import type {
   WordNode,
   WordPart,
 } from "../../ast/types.js";
+import {
+  decodeBytesToUtf8,
+  encodeUtf8ToBytes,
+  latin1FromBytes,
+  unsafeBytesFromLatin1,
+} from "../../encoding.js";
 import { parseArithmeticExpression } from "../../parser/arithmetic-parser.js";
 import { Parser } from "../../parser/parser.js";
 import { createUserRegex } from "../../regex/index.js";
@@ -215,43 +221,63 @@ export async function handlePatternRemoval(
   expandPart: ExpandPartFn,
 ): Promise<string> {
   ctx.coverage?.hit("bash:expansion:pattern_removal");
-  // Build regex pattern from parts, preserving literal vs glob distinction
+  // Pattern matching is codepoint-aware (real bash with a UTF-8 locale).
+  // Decode value + pattern parts to real Unicode, build the regex, run
+  // the match in `u` mode (`.` matches a codepoint, not a code unit),
+  // then re-encode the result back to the pipeline's byte shape.
+  const decodedValue = decodeBytesToUtf8(unsafeBytesFromLatin1(value));
   let regexStr = "";
   const extglob = ctx.state.shoptOptions.extglob;
   if (operation.pattern) {
     for (const part of operation.pattern.parts) {
       if (part.type === "Glob") {
-        regexStr += patternToRegex(part.pattern, operation.greedy, extglob);
+        const p = decodeBytesToUtf8(unsafeBytesFromLatin1(part.pattern));
+        regexStr += patternToRegex(p, operation.greedy, extglob);
       } else if (part.type === "Literal") {
-        // Unquoted literal - treat as glob pattern (may contain *, ?, [...])
-        regexStr += patternToRegex(part.value, operation.greedy, extglob);
+        const p = decodeBytesToUtf8(unsafeBytesFromLatin1(part.value));
+        regexStr += patternToRegex(p, operation.greedy, extglob);
       } else if (part.type === "SingleQuoted" || part.type === "Escaped") {
-        regexStr += escapeRegex(part.value);
+        const p = decodeBytesToUtf8(unsafeBytesFromLatin1(part.value));
+        regexStr += escapeRegex(p);
       } else if (part.type === "DoubleQuoted") {
         const expanded = await expandWordPartsAsync(ctx, part.parts);
-        regexStr += escapeRegex(expanded);
+        regexStr += escapeRegex(
+          decodeBytesToUtf8(unsafeBytesFromLatin1(expanded)),
+        );
       } else if (part.type === "ParameterExpansion") {
         const expanded = await expandPart(ctx, part);
-        regexStr += patternToRegex(expanded, operation.greedy, extglob);
+        regexStr += patternToRegex(
+          decodeBytesToUtf8(unsafeBytesFromLatin1(expanded)),
+          operation.greedy,
+          extglob,
+        );
       } else {
         const expanded = await expandPart(ctx, part);
-        regexStr += escapeRegex(expanded);
+        regexStr += escapeRegex(
+          decodeBytesToUtf8(unsafeBytesFromLatin1(expanded)),
+        );
       }
     }
   }
 
-  // Use 's' flag (dotall) so that . matches newlines (bash ? matches any char including newline)
+  const reencode = (s: string): string =>
+    latin1FromBytes(encodeUtf8ToBytes(s));
+
+  // 'su' flags: dotall + Unicode (so `.` matches one codepoint).
   if (operation.side === "prefix") {
-    return createUserRegex(`^${regexStr}`, "s").replace(value, "");
+    return reencode(
+      createUserRegex(`^${regexStr}`, "su").replace(decodedValue, ""),
+    );
   }
-  const regex = createUserRegex(`${regexStr}$`, "s");
+  const regex = createUserRegex(`${regexStr}$`, "su");
   if (operation.greedy) {
-    return regex.replace(value, "");
+    return reencode(regex.replace(decodedValue, ""));
   }
-  for (let i = value.length; i >= 0; i--) {
-    const suffix = value.slice(i);
+  const chars = [...decodedValue];
+  for (let i = chars.length; i >= 0; i--) {
+    const suffix = chars.slice(i).join("");
     if (regex.test(suffix)) {
-      return value.slice(0, i);
+      return reencode(chars.slice(0, i).join(""));
     }
   }
   return value;
@@ -268,33 +294,57 @@ export async function handlePatternReplacement(
   expandPart: ExpandPartFn,
 ): Promise<string> {
   ctx.coverage?.hit("bash:expansion:pattern_replacement");
+  // Codepoint-aware: decode value + pattern parts and match against
+  // real Unicode in `u` regex mode, then re-encode the result back to
+  // the pipeline's byte shape.
+  const decodedValue = decodeBytesToUtf8(unsafeBytesFromLatin1(value));
   let regex = "";
   const extglob = ctx.state.shoptOptions.extglob;
   if (operation.pattern) {
     for (const part of operation.pattern.parts) {
       if (part.type === "Glob") {
-        regex += patternToRegex(part.pattern, true, extglob);
+        regex += patternToRegex(
+          decodeBytesToUtf8(unsafeBytesFromLatin1(part.pattern)),
+          true,
+          extglob,
+        );
       } else if (part.type === "Literal") {
-        // Unquoted literal - treat as glob pattern (may contain *, ?, [...], \X)
-        regex += patternToRegex(part.value, true, extglob);
+        regex += patternToRegex(
+          decodeBytesToUtf8(unsafeBytesFromLatin1(part.value)),
+          true,
+          extglob,
+        );
       } else if (part.type === "SingleQuoted" || part.type === "Escaped") {
-        regex += escapeRegex(part.value);
+        regex += escapeRegex(
+          decodeBytesToUtf8(unsafeBytesFromLatin1(part.value)),
+        );
       } else if (part.type === "DoubleQuoted") {
         const expanded = await expandWordPartsAsync(ctx, part.parts);
-        regex += escapeRegex(expanded);
+        regex += escapeRegex(
+          decodeBytesToUtf8(unsafeBytesFromLatin1(expanded)),
+        );
       } else if (part.type === "ParameterExpansion") {
         const expanded = await expandPart(ctx, part);
-        regex += patternToRegex(expanded, true, extglob);
+        regex += patternToRegex(
+          decodeBytesToUtf8(unsafeBytesFromLatin1(expanded)),
+          true,
+          extglob,
+        );
       } else {
         const expanded = await expandPart(ctx, part);
-        regex += escapeRegex(expanded);
+        regex += escapeRegex(
+          decodeBytesToUtf8(unsafeBytesFromLatin1(expanded)),
+        );
       }
     }
   }
 
-  const replacement = operation.replacement
+  const rawReplacement = operation.replacement
     ? await expandWordPartsAsync(ctx, operation.replacement.parts)
     : "";
+  // Replacement text is also byte-shape post-ingress; decode for the
+  // Unicode-mode regex.
+  const replacement = decodeBytesToUtf8(unsafeBytesFromLatin1(rawReplacement));
 
   // Apply anchor modifiers
   if (operation.anchor === "start") {
@@ -309,8 +359,11 @@ export async function handlePatternReplacement(
     return value;
   }
 
-  // Use 's' flag (dotall) so that . matches newlines (bash ? and * match any char including newline)
-  const flags = operation.all ? "gs" : "s";
+  // 'su' flags: dotall + Unicode so ? / * match by codepoint.
+  const flags = operation.all ? "gsu" : "su";
+
+  const reencode = (s: string): string =>
+    latin1FromBytes(encodeUtf8ToBytes(s));
 
   try {
     const re = createUserRegex(regex, flags);
@@ -319,12 +372,12 @@ export async function handlePatternReplacement(
       let lastIndex = 0;
       let iterCount = 0;
       const maxStringLen = ctx.limits.maxStringLength;
-      let match: RegExpExecArray | null = re.exec(value);
+      let match: RegExpExecArray | null = re.exec(decodedValue);
       while (match !== null) {
-        if (match[0].length === 0 && match.index === value.length) {
+        if (match[0].length === 0 && match.index === decodedValue.length) {
           break;
         }
-        result += value.slice(lastIndex, match.index) + replacement;
+        result += decodedValue.slice(lastIndex, match.index) + replacement;
         lastIndex = match.index + match[0].length;
         if (match[0].length === 0) {
           lastIndex++;
@@ -337,12 +390,12 @@ export async function handlePatternReplacement(
             "string_length",
           );
         }
-        match = re.exec(value);
+        match = re.exec(decodedValue);
       }
-      result += value.slice(lastIndex);
-      return result;
+      result += decodedValue.slice(lastIndex);
+      return reencode(result);
     }
-    return re.replace(value, replacement);
+    return reencode(re.replace(decodedValue, replacement));
   } catch (e) {
     if (e instanceof ExecutionLimitError) {
       throw e;
@@ -390,10 +443,15 @@ export function handleLength(
       );
     }
     const firstElement = ctx.state.env.get(`${parameter}_0`) || "";
-    return String([...firstElement].length);
+    return String(
+      [...decodeBytesToUtf8(unsafeBytesFromLatin1(firstElement))].length,
+    );
   }
-  // Use spread to count Unicode code points, not UTF-16 code units
-  return String([...value].length);
+  // ${#v} reports the number of Unicode codepoints, matching real bash
+  // with a UTF-8 locale. Variables are latin1-byte shape internally
+  // (bytesFromHostText at every ingress), so decode first and then
+  // count codepoints via the iterator protocol.
+  return String([...decodeBytesToUtf8(unsafeBytesFromLatin1(value))].length);
 }
 
 /**
@@ -496,17 +554,26 @@ export async function handleSubstring(
   }
 
   // String slicing with UTF-8 support
-  const chars = [...value];
+  // ${v:offset:length} slices by codepoint, matching real bash with a
+  // UTF-8 locale. Decode the byte-shape variable to real Unicode, do
+  // codepoint-level slicing via the spread iterator, then re-encode
+  // the result back to latin1 byte shape for the pipeline.
+  const decoded = decodeBytesToUtf8(unsafeBytesFromLatin1(value));
+  const chars = [...decoded];
   let start = offset;
   if (start < 0) start = Math.max(0, chars.length + start);
+  let sliced: string;
   if (length !== undefined) {
     if (length < 0) {
       const endPos = chars.length + length;
-      return chars.slice(start, Math.max(start, endPos)).join("");
+      sliced = chars.slice(start, Math.max(start, endPos)).join("");
+    } else {
+      sliced = chars.slice(start, start + length).join("");
     }
-    return chars.slice(start, start + length).join("");
+  } else {
+    sliced = chars.slice(start).join("");
   }
-  return chars.slice(start).join("");
+  return latin1FromBytes(encodeUtf8ToBytes(sliced));
 }
 
 /**

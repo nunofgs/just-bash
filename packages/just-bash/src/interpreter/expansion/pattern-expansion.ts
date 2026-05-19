@@ -6,6 +6,7 @@
  */
 
 import type { ScriptNode } from "../../ast/types.js";
+import { latin1FromBytes, stdoutAsBytes } from "../../encoding.js";
 import { Parser } from "../../parser/parser.js";
 import { ExecutionLimitError, ExitError } from "../errors.js";
 import type { InterpreterContext } from "../types.js";
@@ -136,7 +137,8 @@ async function executeCommandSubstitutionFromString(
         (ctx.state.expansionStderr || "") + result.stderr;
     }
     ctx.state.bashPid = savedBashPid;
-    return result.stdout.replace(/\n+$/, "");
+    // Byte-shape coercion (same rationale as expansion.ts command-sub).
+    return latin1FromBytes(stdoutAsBytes(result)).replace(/\n+$/, "");
   } catch (error) {
     ctx.state.env = savedEnv;
     ctx.state.cwd = savedCwd;
@@ -148,7 +150,14 @@ async function executeCommandSubstitutionFromString(
     if (error instanceof ExitError) {
       ctx.state.lastExitCode = error.exitCode;
       ctx.state.env.set("?", String(error.exitCode));
-      return error.stdout?.replace(/\n+$/, "") ?? "";
+      // ExitError has no kind tag; let stdoutAsBytes full-scan sniff so
+      // an untagged Unicode buffer is encoded once. Mirrors the equivalent
+      // guard in expansion.ts's command-sub error path.
+      if (!error.stdout) return "";
+      return latin1FromBytes(stdoutAsBytes({ stdout: error.stdout })).replace(
+        /\n+$/,
+        "",
+      );
     }
     return "";
   }

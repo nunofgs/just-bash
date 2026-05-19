@@ -6,6 +6,7 @@
  */
 
 import type { StatementNode } from "../../ast/types.js";
+import { appendExecResultBytes } from "../../encoding.js";
 import type { ExecResult } from "../../types.js";
 import {
   ErrexitError,
@@ -40,8 +41,10 @@ export async function executeStatements(
   try {
     for (const stmt of statements) {
       const result = await ctx.executeStatement(stmt);
-      stdout += result.stdout;
-      stderr += result.stderr;
+      // Byte-encode each statement's output via its own shape tags before
+      // concatenating, so a text-tagged inner command's Unicode survives
+      // a downstream redirect on the surrounding block.
+      ({ stdout, stderr } = appendExecResultBytes({ stdout, stderr }, result));
       exitCode = result.exitCode;
     }
   } catch (error) {
@@ -59,8 +62,12 @@ export async function executeStatements(
       stdout,
       stderr: `${stderr}${getErrorMessage(error)}\n`,
       exitCode: 1,
+      stdoutKind: "bytes",
     };
   }
 
-  return { stdout, stderr, exitCode };
+  // Accumulator output is byte-shape (see appendExecResultBytes); tag it so
+  // any redirect on the surrounding block writes verbatim binary rather
+  // than re-running encoding decisions on already-encoded bytes.
+  return { stdout, stderr, exitCode, stdoutKind: "bytes" };
 }

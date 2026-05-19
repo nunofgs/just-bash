@@ -21,6 +21,7 @@ import type {
   WhileNode,
   WordNode,
 } from "../ast/types.js";
+import { appendExecResultBytes } from "../encoding.js";
 import type { ExecResult } from "../types.js";
 import { evaluateArithmetic } from "./arithmetic.js";
 import { matchPattern } from "./conditionals.js";
@@ -48,6 +49,8 @@ export async function executeIf(
   for (const clause of node.clauses) {
     // Condition evaluation should not trigger errexit
     const condResult = await executeCondition(ctx, clause.condition);
+    // condResult is byte-shape (executeCondition uses appendExecResultBytes);
+    // appending bytes to bytes is safe.
     stdout += condResult.stdout;
     stderr += condResult.stderr;
 
@@ -60,7 +63,7 @@ export async function executeIf(
     return executeStatements(ctx, node.elseBody, stdout, stderr);
   }
 
-  return result(stdout, stderr, 0);
+  return { ...result(stdout, stderr, 0), stdoutKind: "bytes" };
 }
 
 export async function executeFor(
@@ -123,8 +126,10 @@ export async function executeFor(
       try {
         for (const stmt of node.body) {
           const stmtResult = await ctx.executeStatement(stmt);
-          stdout += stmtResult.stdout;
-          stderr += stmtResult.stderr;
+          ({ stdout, stderr } = appendExecResultBytes(
+            { stdout, stderr },
+            stmtResult,
+          ));
           exitCode = stmtResult.exitCode;
         }
       } catch (error) {
@@ -140,7 +145,7 @@ export async function executeFor(
         if (loopResult.action === "continue") continue;
         if (loopResult.action === "error") {
           // Apply output redirections before returning
-          const bodyResult = result(stdout, stderr, loopResult.exitCode ?? 1);
+          const bodyResult: ExecResult = { ...result(stdout, stderr, loopResult.exitCode ?? 1), stdoutKind: "bytes" };
           return applyRedirections(ctx, bodyResult, node.redirections);
         }
         throw loopResult.error;
@@ -154,7 +159,7 @@ export async function executeFor(
   // Do NOT ctx.state.env.delete(node.variable) here
 
   // Apply output redirections
-  const bodyResult = result(stdout, stderr, exitCode);
+  const bodyResult: ExecResult = { ...result(stdout, stderr, exitCode), stdoutKind: "bytes" };
   return applyRedirections(ctx, bodyResult, node.redirections);
 }
 
@@ -213,8 +218,10 @@ export async function executeCStyleFor(
       try {
         for (const stmt of node.body) {
           const stmtResult = await ctx.executeStatement(stmt);
-          stdout += stmtResult.stdout;
-          stderr += stmtResult.stderr;
+          ({ stdout, stderr } = appendExecResultBytes(
+            { stdout, stderr },
+            stmtResult,
+          ));
           exitCode = stmtResult.exitCode;
         }
       } catch (error) {
@@ -236,7 +243,7 @@ export async function executeCStyleFor(
         }
         if (loopResult.action === "error") {
           // Apply output redirections before returning
-          const bodyResult = result(stdout, stderr, loopResult.exitCode ?? 1);
+          const bodyResult: ExecResult = { ...result(stdout, stderr, loopResult.exitCode ?? 1), stdoutKind: "bytes" };
           return applyRedirections(ctx, bodyResult, node.redirections);
         }
         throw loopResult.error;
@@ -251,7 +258,7 @@ export async function executeCStyleFor(
   }
 
   // Apply output redirections
-  const bodyResult = result(stdout, stderr, exitCode);
+  const bodyResult: ExecResult = { ...result(stdout, stderr, exitCode), stdoutKind: "bytes" };
   return applyRedirections(ctx, bodyResult, node.redirections);
 }
 
@@ -324,8 +331,7 @@ export async function executeWhile(
       try {
         for (const stmt of node.condition) {
           const result = await ctx.executeStatement(stmt);
-          stdout += result.stdout;
-          stderr += result.stderr;
+          ({ stdout, stderr } = appendExecResultBytes({ stdout, stderr }, result));
           conditionExitCode = result.exitCode;
         }
       } catch (error) {
@@ -367,8 +373,10 @@ export async function executeWhile(
       try {
         for (const stmt of node.body) {
           const stmtResult = await ctx.executeStatement(stmt);
-          stdout += stmtResult.stdout;
-          stderr += stmtResult.stderr;
+          ({ stdout, stderr } = appendExecResultBytes(
+            { stdout, stderr },
+            stmtResult,
+          ));
           exitCode = stmtResult.exitCode;
         }
       } catch (error) {
@@ -383,7 +391,7 @@ export async function executeWhile(
         if (loopResult.action === "break") break;
         if (loopResult.action === "continue") continue;
         if (loopResult.action === "error") {
-          return result(stdout, stderr, loopResult.exitCode ?? 1);
+          return { ...result(stdout, stderr, loopResult.exitCode ?? 1), stdoutKind: "bytes" };
         }
         throw loopResult.error;
       }
@@ -393,7 +401,7 @@ export async function executeWhile(
     ctx.state.groupStdin = savedGroupStdin;
   }
 
-  return result(stdout, stderr, exitCode);
+  return { ...result(stdout, stderr, exitCode), stdoutKind: "bytes" };
 }
 
 export async function executeUntil(
@@ -428,8 +436,10 @@ export async function executeUntil(
       try {
         for (const stmt of node.body) {
           const stmtResult = await ctx.executeStatement(stmt);
-          stdout += stmtResult.stdout;
-          stderr += stmtResult.stderr;
+          ({ stdout, stderr } = appendExecResultBytes(
+            { stdout, stderr },
+            stmtResult,
+          ));
           exitCode = stmtResult.exitCode;
         }
       } catch (error) {
@@ -444,7 +454,7 @@ export async function executeUntil(
         if (loopResult.action === "break") break;
         if (loopResult.action === "continue") continue;
         if (loopResult.action === "error") {
-          return result(stdout, stderr, loopResult.exitCode ?? 1);
+          return { ...result(stdout, stderr, loopResult.exitCode ?? 1), stdoutKind: "bytes" };
         }
         throw loopResult.error;
       }
@@ -453,7 +463,7 @@ export async function executeUntil(
     ctx.state.loopDepth--;
   }
 
-  return result(stdout, stderr, exitCode);
+  return { ...result(stdout, stderr, exitCode), stdoutKind: "bytes" };
 }
 
 export async function executeCase(
@@ -528,6 +538,6 @@ export async function executeCase(
   }
 
   // Apply output redirections
-  const bodyResult = result(stdout, stderr, exitCode);
+  const bodyResult: ExecResult = { ...result(stdout, stderr, exitCode), stdoutKind: "bytes" };
   return applyRedirections(ctx, bodyResult, node.redirections);
 }
