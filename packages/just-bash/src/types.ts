@@ -35,6 +35,14 @@ export interface ExecResult {
    */
   stdoutKind?: "text" | "bytes";
   /**
+   * Same contract as `stdoutKind` but for `stderr`. Most commands hand-build
+   * stderr from JS string literals (ASCII error messages) so leaving this
+   * unset is the byte-shape default. Set `"text"` when stderr contains real
+   * Unicode codepoints decoded from input so combined redirects (`&>`, `2>&1`)
+   * encode each half independently.
+   */
+  stderrKind?: "text" | "bytes";
+  /**
    * Legacy alias for `stdoutKind: "bytes"`. Older commands set this to
    * `"binary"` to mark binary output. New code should prefer `stdoutKind`.
    */
