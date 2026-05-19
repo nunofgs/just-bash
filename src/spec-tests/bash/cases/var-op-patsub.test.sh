@@ -243,7 +243,7 @@ _μ_ and _μ_
 ## END
 
 #### When LC_ALL=C, pattern ? doesn't match multibyte character
-## SKIP (unimplementable): Locale settings not supported - JS strings are UTF-16 based
+## SKIP (just-bash always does codepoint-aware pattern matching under the byte-shape pipeline contract; LC_ALL=C byte-only matching is not supported)
 export LC_ALL='C'
 
 s='_μ_ and _μ_'

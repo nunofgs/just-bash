@@ -896,7 +896,14 @@ async function extractTarArchive(
   if (errors.length > 0) {
     stderr += `${errors.join("\n")}\n`;
   }
-  return { stdout: stdoutContent, stderr, exitCode: errors.length > 0 ? 2 : 0 };
+  // -O decodes entry content via TextDecoder; tag as text so the
+  // pipeline re-encodes codepoints to UTF-8 bytes on egress.
+  return {
+    stdout: stdoutContent,
+    stderr,
+    exitCode: errors.length > 0 ? 2 : 0,
+    stdoutKind: "text" as const,
+  };
 }
 
 /**
@@ -1003,7 +1010,9 @@ async function listTarArchive(
     }
   }
 
-  return { stdout, stderr: "", exitCode: 0 };
+  // Listing emits archive entry names which were decoded from header
+  // bytes; tag text so the pipeline re-encodes to UTF-8 on egress.
+  return { stdout, stderr: "", exitCode: 0, stdoutKind: "text" as const };
 }
 
 export const tarCommand: Command = {

@@ -88,6 +88,7 @@ export const rev: Command = {
               exitCode: 1,
               stdout: output,
               stderr: `rev: ${file}: No such file or directory\n`,
+              stdoutKind: "text" as const,
             };
           }
           output += processContent(content);
@@ -95,11 +96,13 @@ export const rev: Command = {
       }
     }
 
-    // rev emits text; the pipeline handles encoding.
+    // rev decodes input to reverse codepoints (not bytes); tag the
+    // output "text" so redirects / pipes encode codepoints as UTF-8.
     return {
       exitCode: 0,
       stdout: output,
       stderr: "",
+      stdoutKind: "text" as const,
     };
   },
 };

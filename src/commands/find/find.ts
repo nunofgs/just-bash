@@ -1,3 +1,4 @@
+import { appendExecResultBytes } from "../../encoding.js";
 import type { DirentEntry } from "../../fs/interface.js";
 import { shellJoinArgs } from "../../helpers/shell-quote.js";
 import type {
@@ -828,7 +829,6 @@ export const findCommand: Command = {
           case "print":
             // When -print is in the expression (hasExplicitPrint), results are already
             // populated based on when -print was triggered during evaluation.
-            // Just output them here.
             stdout += results.length > 0 ? `${results.join("\n")}\n` : "";
             break;
 
@@ -883,8 +883,12 @@ export const findCommand: Command = {
                 signal: ctx.signal,
                 args: cmdWithFiles.slice(1),
               });
-              stdout += result.stdout;
-              stderr += result.stderr;
+              // Byte-encode each subcommand's output via its own shape tag
+              // so a text-tagged child can't corrupt the accumulator.
+              ({ stdout, stderr } = appendExecResultBytes(
+                { stdout, stderr },
+                result,
+              ));
               if (result.exitCode !== 0) {
                 exitCode = result.exitCode;
               }
@@ -899,8 +903,10 @@ export const findCommand: Command = {
                   signal: ctx.signal,
                   args: cmdWithFile.slice(1),
                 });
-                stdout += result.stdout;
-                stderr += result.stderr;
+                ({ stdout, stderr } = appendExecResultBytes(
+                  { stdout, stderr },
+                  result,
+                ));
                 if (result.exitCode !== 0) {
                   exitCode = result.exitCode;
                 }
@@ -910,10 +916,17 @@ export const findCommand: Command = {
         }
       }
     } else if (useDefaultPrint) {
-      // Default: print with newline separator
+      // Default: print with newline separator.
       stdout = results.length > 0 ? `${results.join("\n")}\n` : "";
     }
 
+    // find's output is built from filesystem paths, which under the
+    // byte-shape contract are already byte-shape — the path bytes flow
+    // through without transformation. Subcommand output from -exec was
+    // byte-encoded via appendExecResultBytes. Leave untagged so the
+    // redirect/pipe boundary either passes the bytes through (the
+    // common case, all chars ≤ 0xff) or full-scans and UTF-8-encodes
+    // any defensive Unicode escape that snuck through.
     return { stdout, stderr, exitCode };
   },
 };

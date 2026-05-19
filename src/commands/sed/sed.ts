@@ -1,4 +1,9 @@
-import { decodeBytesToUtf8 } from "../../encoding.js";
+import {
+  decodeBytesToUtf8,
+  encodeUtf8ToBytes,
+  latin1FromBytes,
+  unsafeBytesFromLatin1,
+} from "../../encoding.js";
 import { sanitizeErrorMessage } from "../../fs/sanitize-error.js";
 import { ExecutionLimitError } from "../../interpreter/errors.js";
 import type { ExecutionLimits } from "../../limits.js";
@@ -456,9 +461,15 @@ export const sedCommand: Command = {
       };
     }
 
-    // Parse all scripts
+    // Parse all scripts. Script source crossed the byte boundary at
+    // Bash.exec ingress, so `scripts` is in latin1-byte shape. Decode
+    // it to real Unicode here so the regex engine sees multibyte chars
+    // as single codepoints (matching the decoded stdin below).
+    const decodedScripts = scripts.map((s) =>
+      decodeBytesToUtf8(unsafeBytesFromLatin1(s)),
+    );
     const { commands, error, silentMode } = parseMultipleScripts(
-      scripts,
+      decodedScripts,
       extendedRegex,
     );
     if (error) {
@@ -554,9 +565,12 @@ export const sedCommand: Command = {
             requireDefenseContext: ctx.requireDefenseContext,
           }),
         );
-        // sed emits text; the pipeline handles encoding.
+        // Pipeline contract: emit byte-shape stdout. `result.output` is
+        // real Unicode (regex worked on decoded text); re-encode to
+        // latin1 byte shape so the bytes downstream layers see match
+        // the bytes a real `sed` would produce on stdout.
         return {
-          stdout: result.output,
+          stdout: latin1FromBytes(encodeUtf8ToBytes(result.output)),
           stderr: result.errorMessage ? `${result.errorMessage}\n` : "",
           exitCode: result.exitCode ?? 0,
         };
@@ -638,7 +652,9 @@ export const sedCommand: Command = {
         }),
       );
       return {
-        stdout: result.output,
+        // Same byte-shape egress as the stdin path: re-encode the
+        // post-substitution Unicode text into latin1 byte shape.
+        stdout: latin1FromBytes(encodeUtf8ToBytes(result.output)),
         stderr: result.errorMessage ? `${result.errorMessage}\n` : "",
         exitCode: result.exitCode ?? 0,
       };

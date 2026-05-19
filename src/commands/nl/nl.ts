@@ -294,6 +294,7 @@ export const nl: Command = {
             exitCode: 1,
             stdout: output,
             stderr: `nl: ${file}: No such file or directory\n`,
+            stdoutKind: "text" as const,
           };
         }
         const result = processContent(content, options, lineNumber);
@@ -302,11 +303,13 @@ export const nl: Command = {
       }
     }
 
-    // nl emits text; the pipeline handles encoding.
+    // nl decodes input to number lines; tag the output "text" so
+    // redirects / pipes encode codepoints as UTF-8 on the way out.
     return {
       exitCode: 0,
       stdout: output,
       stderr: "",
+      stdoutKind: "text" as const,
     };
   },
 };

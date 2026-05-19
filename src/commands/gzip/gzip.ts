@@ -5,7 +5,11 @@
  */
 
 import { constants, gunzipSync, gzipSync } from "node:zlib";
-import { latin1FromBytes } from "../../encoding.js";
+import {
+  decodeBytesToUtf8,
+  latin1FromBytes,
+  unsafeBytesFromLatin1,
+} from "../../encoding.js";
 import type { Command, CommandContext, ExecResult } from "../../types.js";
 import { parseArgs } from "../../utils/args.js";
 import { hasHelpFlag, showHelp } from "../help.js";
@@ -270,6 +274,11 @@ interface GzipResult {
   stdout: string;
   stderr: string;
   exitCode: number;
+  // Set when the branch produced text (e.g. -l listing) rather than the
+  // default binary compress/decompress output. The outer wrapper reads
+  // this to decide between `stdoutEncoding: "binary"` and
+  // `stdoutKind: "text"`.
+  stdoutKind?: "text" | "bytes";
 }
 
 async function processFile(
@@ -646,8 +655,16 @@ async function listFile(
       : "0.0";
 
   const header = parseGzipHeader(inputData);
-  const name =
-    header.originalName || (file === "-" ? "" : file.replace(/\.gz$/, ""));
+  // header.originalName is TextDecoder-decoded real Unicode. The fallback
+  // path is the argv-derived `file`, which under the byte-shape contract
+  // is a byte-shape string; decode it to real text so both branches of
+  // the name expression carry the same shape (real Unicode), matching the
+  // `stdoutKind: "text"` tag on the -l aggregator's return.
+  const fallbackName =
+    file === "-"
+      ? ""
+      : decodeBytesToUtf8(unsafeBytesFromLatin1(file)).replace(/\.gz$/, "");
+  const name = header.originalName || fallbackName;
 
   // Format: compressed uncompressed ratio uncompressed_name
   const line = `${compressed.toString().padStart(10)} ${uncompressed.toString().padStart(10)} ${ratio.padStart(5)}% ${name}\n`;
@@ -744,7 +761,9 @@ async function executeGzip(
     flags.uncompress;
   const toStdout = cmdName === "zcat" || flags.stdout || flags.toStdout;
 
-  // Handle -l (list)
+  // Handle -l (list). Output is the listing header plus per-file lines
+  // that include the gzip-header-decoded `originalName` (real Unicode).
+  // Tag text so a multibyte filename survives a redirect / pipe egress.
   if (flags.list) {
     if (files.length === 0) files = ["-"];
 
@@ -759,10 +778,12 @@ async function executeGzip(
       if (result.exitCode !== 0) exitCode = result.exitCode;
     }
 
-    return { stdout, stderr, exitCode };
+    return { stdout, stderr, exitCode, stdoutKind: "text" };
   }
 
-  // Handle -t (test)
+  // Handle -t (test). Test output is ASCII "OK" lines on stderr; stdout
+  // is empty. Tag text for consistency, though the buffer is empty in
+  // practice.
   if (flags.test) {
     if (files.length === 0) files = ["-"];
 
@@ -777,7 +798,7 @@ async function executeGzip(
       if (result.exitCode !== 0) exitCode = result.exitCode;
     }
 
-    return { stdout, stderr, exitCode };
+    return { stdout, stderr, exitCode, stdoutKind: "text" };
   }
 
   // No files specified - use stdin
@@ -810,6 +831,9 @@ export const gzipCommand: Command = {
   name: "gzip",
   async execute(args: string[], ctx: CommandContext): Promise<ExecResult> {
     const result = await executeGzip(args, ctx, "gzip");
+    // -l / -t produce real text (decoded filenames, OK messages);
+    // compress/decompress produce binary. Honor the branch's own tag.
+    if (result.stdoutKind === "text") return result;
     return { ...result, stdoutEncoding: "binary" };
   },
 };
@@ -818,6 +842,7 @@ export const gunzipCommand: Command = {
   name: "gunzip",
   async execute(args: string[], ctx: CommandContext): Promise<ExecResult> {
     const result = await executeGzip(args, ctx, "gunzip");
+    if (result.stdoutKind === "text") return result;
     return { ...result, stdoutEncoding: "binary" };
   },
 };
@@ -826,6 +851,7 @@ export const zcatCommand: Command = {
   name: "zcat",
   async execute(args: string[], ctx: CommandContext): Promise<ExecResult> {
     const result = await executeGzip(args, ctx, "zcat");
+    if (result.stdoutKind === "text") return result;
     return { ...result, stdoutEncoding: "binary" };
   },
 };

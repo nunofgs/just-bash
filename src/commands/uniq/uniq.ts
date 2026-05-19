@@ -1,4 +1,8 @@
-import { decodeBytesToUtf8, latin1FromBytes } from "../../encoding.js";
+import {
+  decodeBytesToUtf8,
+  encodeUtf8ToBytes,
+  latin1FromBytes,
+} from "../../encoding.js";
 import type { Command, CommandContext, ExecResult } from "../../types.js";
 import { parseArgs } from "../../utils/args.js";
 import { readAndConcat } from "../../utils/file-reader.js";
@@ -102,10 +106,12 @@ export const uniqCommand: Command = {
       }
     }
 
-    // ignore-case mode produces decoded text; default mode forwards bytes.
+    // -i case-folded the input via decodeBytesToUtf8, so `output` is
+    // real Unicode here. Re-encode to byte shape to match the
+    // pipeline contract. Default mode forwards bytes verbatim.
     if (ignoreCase) {
       return {
-        stdout: output,
+        stdout: latin1FromBytes(encodeUtf8ToBytes(output)),
         stderr: "",
         exitCode: 0,
       };
@@ -114,7 +120,6 @@ export const uniqCommand: Command = {
       stdout: output,
       stderr: "",
       exitCode: 0,
-      stdoutKind: "bytes",
       stdoutEncoding: "binary",
     };
   },

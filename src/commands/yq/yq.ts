@@ -376,11 +376,14 @@ export const yqCommand: Command = {
           ? 1
           : 0;
 
-      // yq emits text; the pipeline handles encoding.
+      // yq emits decoded YAML/JSON text (string values are real
+      // Unicode codepoints); tag so redirects / pipes encode
+      // codepoints as proper UTF-8 bytes on the way out.
       return {
         stdout: finalOutput,
         stderr: "",
         exitCode,
+        stdoutKind: "text" as const,
       };
     } catch (e) {
       if (e instanceof SecurityViolationError) {

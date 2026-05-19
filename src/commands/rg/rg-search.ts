@@ -3,7 +3,12 @@
  */
 
 import { gunzipSync } from "node:zlib";
-import { decodeBytesToUtf8, unsafeBytesFromLatin1 } from "../../encoding.js";
+import {
+  decodeBytesToUtf8,
+  encodeUtf8ToBytes,
+  latin1FromBytes,
+  unsafeBytesFromLatin1,
+} from "../../encoding.js";
 import { shellJoinArgs } from "../../helpers/shell-quote.js";
 import { createUserRegex, type UserRegex } from "../../regex/index.js";
 import type { CommandContext, ExecResult } from "../../types.js";
@@ -226,11 +231,17 @@ function buildSearchRegex(
   options: RgOptions,
   ignoreCase: boolean,
 ): RegexResult {
+  // Decode pattern args from latin1-byte shape to real Unicode so the
+  // regex engine sees multibyte chars as single codepoints (matching
+  // the decoded haystack content downstream).
+  const decoded = patterns.map((p) =>
+    decodeBytesToUtf8(unsafeBytesFromLatin1(p)),
+  );
   let combinedPattern: string;
-  if (patterns.length === 1) {
-    combinedPattern = patterns[0];
+  if (decoded.length === 1) {
+    combinedPattern = decoded[0];
   } else {
-    combinedPattern = patterns
+    combinedPattern = decoded
       .map((p) =>
         options.fixedStrings
           ? p.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
@@ -1010,9 +1021,10 @@ async function searchFiles(
     exitCode = anyMatch ? 0 : 1;
   }
 
-  // rg emits text; the pipeline handles encoding.
+  // Pipeline contract: emit byte-shape stdout. finalStdout is built
+  // from decoded match output and ASCII banners; re-encode to latin1.
   return {
-    stdout: finalStdout,
+    stdout: latin1FromBytes(encodeUtf8ToBytes(finalStdout)),
     stderr: "",
     exitCode,
   };

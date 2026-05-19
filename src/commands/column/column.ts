@@ -237,11 +237,13 @@ export const column: Command = {
       output += "\n";
     }
 
-    // column emits text; the pipeline handles encoding.
+    // column decodes stdin to align by codepoint width; tag the output
+    // "text" so redirects / pipes encode codepoints as UTF-8 bytes.
     return {
       exitCode: 0,
       stdout: output,
       stderr: "",
+      stdoutKind: "text" as const,
     };
   },
 };

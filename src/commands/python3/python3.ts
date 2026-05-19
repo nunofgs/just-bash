@@ -506,9 +506,11 @@ async function executePython(
     };
   }
 
-  // python3 emits text; the pipeline handles encoding.
+  // python3 emits decoded text (print() output is Python str → JS
+  // Unicode); tag so redirects / pipes encode codepoints as UTF-8.
   return {
     ...bridgeOutput,
+    stdoutKind: "text" as const,
   };
 }
 

@@ -271,17 +271,20 @@ export const unexpand: Command = {
             exitCode: 1,
             stdout: output,
             stderr: `unexpand: ${file}: No such file or directory\n`,
+            stdoutKind: "text" as const,
           };
         }
         output += processContent(content, options);
       }
     }
 
-    // unexpand emits text; the pipeline handles encoding.
+    // unexpand decodes input to count columns by codepoint; tag the
+    // output "text" so redirects / pipes encode codepoints as UTF-8.
     return {
       exitCode: 0,
       stdout: output,
       stderr: "",
+      stdoutKind: "text" as const,
     };
   },
 };

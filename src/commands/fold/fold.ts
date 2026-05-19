@@ -256,17 +256,21 @@ export const fold: Command = {
             exitCode: 1,
             stdout: output,
             stderr: `fold: ${file}: No such file or directory\n`,
+            stdoutKind: "text" as const,
           };
         }
         output += processContent(content, options);
       }
     }
 
-    // fold emits text; the pipeline handles encoding.
+    // fold decodes input to operate on codepoints; tag the output
+    // "text" so redirects / pipes encode it back to UTF-8 bytes
+    // instead of truncating latin1-range codepoints to one byte.
     return {
       exitCode: 0,
       stdout: output,
       stderr: "",
+      stdoutKind: "text" as const,
     };
   },
 };

@@ -4,7 +4,10 @@
  * Full jq implementation with proper parser and evaluator.
  */
 
-import { decodeBytesToUtf8 } from "../../encoding.js";
+import {
+  decodeBytesToUtf8,
+  unsafeBytesFromLatin1,
+} from "../../encoding.js";
 import { sanitizeErrorMessage } from "../../fs/sanitize-error.js";
 import { ExecutionLimitError } from "../../interpreter/errors.js";
 import {
@@ -355,7 +358,12 @@ export const jqCommand: Command = {
     }
 
     try {
-      const ast = parse(filter);
+      // jq's filter language uses real Unicode codepoints (string
+      // literals, regex, identifiers). Decode the latin1-byte arg
+      // before parsing so multibyte literals inside the filter (e.g.
+      // `.text | startswith("á")`) match correctly against the
+      // decoded JSON input.
+      const ast = parse(decodeBytesToUtf8(unsafeBytesFromLatin1(filter)));
       let values: QueryValue[] = [];
 
       const evalOptions: EvaluateOptions = {
@@ -447,12 +455,15 @@ export const jqCommand: Command = {
           ? 1
           : 0;
 
-      // jq emits text; the pipeline handles encoding.
+      // jq emits decoded JSON text (string values are real Unicode
+      // codepoints); tag the output "text" so redirects / pipes encode
+      // codepoints as proper UTF-8 bytes on the way out.
       const stdoutText = output ? (joinOutput ? output : `${output}\n`) : "";
       return {
         stdout: stdoutText,
         stderr: "",
         exitCode,
+        stdoutKind: "text" as const,
       };
     } catch (e) {
       if (e instanceof SecurityViolationError) {

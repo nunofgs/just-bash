@@ -229,17 +229,22 @@ export const expand: Command = {
             exitCode: 1,
             stdout: output,
             stderr: `expand: ${file}: No such file or directory\n`,
+            // Already-accumulated output is decoded codepoint text;
+            // tag it so the partial-result write hits utf8 encoding.
+            stdoutKind: "text" as const,
           };
         }
         output += processContent(content, options);
       }
     }
 
-    // expand emits text; the pipeline handles encoding.
+    // expand decodes input to count columns by codepoint; tag the
+    // output "text" so redirects / pipes encode codepoints as UTF-8.
     return {
       exitCode: 0,
       stdout: output,
       stderr: "",
+      stdoutKind: "text" as const,
     };
   },
 };

@@ -93,7 +93,9 @@ export const diffCommand: Command = {
 
     if (t1 === t2) {
       if (reportSame)
-        // diff emits text; the pipeline handles encoding.
+        // "Files X and Y are identical" — output is ASCII + byte-shape
+        // filenames from argv. Leave untagged; redirect sniff sees all
+        // chars <= 0xFF and writes the bytes verbatim.
         return {
           stdout: `Files ${f1} and ${f2} are identical\n`,
           stderr: "",
@@ -103,7 +105,7 @@ export const diffCommand: Command = {
     }
 
     if (brief) {
-      // diff emits text; the pipeline handles encoding.
+      // "Files X and Y differ" — same as the -s message above.
       return {
         stdout: `Files ${f1} and ${f2} differ\n`,
         stderr: "",
@@ -114,11 +116,13 @@ export const diffCommand: Command = {
     const output = Diff.createTwoFilesPatch(f1, f2, c1, c2, "", "", {
       context: 3,
     });
-    // diff emits text; the pipeline handles encoding.
+    // diff produces a unified patch as decoded text; tag it so
+    // redirects / pipes encode codepoints as UTF-8.
     return {
       stdout: output,
       stderr: "",
       exitCode: 1,
+      stdoutKind: "text" as const,
     };
   },
 };
