@@ -92,6 +92,60 @@ export function encodeUtf8ToBytes(s: string): ByteString {
   return out as unknown as ByteString;
 }
 
+/**
+ * Convert host-provided JS Unicode text into the pipeline's latin1-byte
+ * shape. Use at every host→shell *string* ingress: `Bash.exec`'s
+ * `commandLine`, `cwd`, `args[]`, `ExecOptions.stdin` (when host hands
+ * a `string`), `ExecOptions.env` values, heredoc / here-string bodies.
+ * Once a value is byte-shape, every internal boundary (commands, pipes,
+ * variables, redirects) is byte-faithful by default.
+ *
+ * Not for file *content*: `InitialFiles` string values are written to
+ * disk via `InMemoryFs.toBuffer` which UTF-8-encodes them on write, so
+ * the on-disk bytes are already correct without a normalization pass.
+ *
+ * Idempotent: re-normalizing an already byte-shape string is a no-op,
+ * so recursive entry points (`bash -c <script>`, recursive `exec`,
+ * `source script.sh`) don't double-encode.
+ *
+ * Detection rule:
+ *  - any char > 0xFF  → real Unicode → UTF-8 encode and pack as latin1.
+ *  - pure ASCII (all ≤ 0x7F) → already byte-shape (1 char = 1 byte).
+ *  - mixed 0x80..0xFF → ambiguous. Could be host latin1 text (`é` = `é`)
+ *    or already byte-shape (`é` packed as `Ã©`). Decode as UTF-8: if it
+ *    yields a different string (i.e. it WAS a valid UTF-8 byte buffer),
+ *    treat as byte-shape and pass through. Otherwise treat as host text
+ *    and encode.
+ */
+export function bytesFromHostText(source: string): string {
+  if (!source) return source;
+
+  let hasHighByte = false;
+  for (let i = 0; i < source.length; i++) {
+    const code = source.charCodeAt(i);
+    if (code > 0xff) {
+      // Real Unicode codepoint outside latin1 range — definitely host text.
+      return latin1FromBytes(encodeUtf8ToBytes(source));
+    }
+    if (code > 0x7f) hasHighByte = true;
+  }
+  if (!hasHighByte) return source;
+
+  // All chars in 0..0xFF, with at least one ≥ 0x80. Distinguish "already
+  // byte-shape" (UTF-8 bytes packed as latin1) from "host latin1 text"
+  // via a strict UTF-8 round-trip. A successful decode that yields a
+  // different string means the source was a valid byte buffer; leave it.
+  try {
+    const bytes = new Uint8Array(source.length);
+    for (let i = 0; i < source.length; i++) bytes[i] = source.charCodeAt(i);
+    const decoded = strictUtf8Decoder.decode(bytes);
+    if (decoded !== source) return source;
+  } catch {
+    // Not valid UTF-8 — definitely host text, fall through to encode.
+  }
+  return latin1FromBytes(encodeUtf8ToBytes(source));
+}
+
 /** The empty `ByteString`. */
 export const EMPTY_BYTES: ByteString = "" as unknown as ByteString;
 
@@ -137,20 +191,21 @@ export async function readBytesFrom(
 // `stdoutEncoding` flag, never by inspecting characters.
 // ---------------------------------------------------------------------------
 
-/** Either-or shape of a command's `stdout`. */
+/** Either-or shape of a command's `stdout` / `stderr`. */
 export type OutputKind = "text" | "bytes";
 
 /**
- * Read the explicit shape of a command's stdout. Falls back to the legacy
- * `stdoutEncoding === "binary"` flag for results produced before the
- * `stdoutKind` field existed; defaults to `"text"` otherwise.
+ * Read the explicit shape of a command's stdout. Returns the producer's
+ * `stdoutKind` tag verbatim if set. Defaults to `"bytes"` to match the
+ * byte-shape pipeline contract — internal builtins pass through
+ * ingress-normalized bytes, and the legacy `stdoutEncoding: "binary"`
+ * flag agrees with that default.
  */
 export function stdoutKind(result: {
   stdoutKind?: OutputKind;
   stdoutEncoding?: "binary";
 }): OutputKind {
-  if (result.stdoutKind) return result.stdoutKind;
-  return result.stdoutEncoding === "binary" ? "bytes" : "text";
+  return result.stdoutKind ?? "bytes";
 }
 
 /**
@@ -162,9 +217,28 @@ export function stdoutAsBytes(result: {
   stdoutKind?: OutputKind;
   stdoutEncoding?: "binary";
 }): ByteString {
-  return stdoutKind(result) === "bytes"
-    ? unsafeBytesFromLatin1(result.stdout)
-    : encodeUtf8ToBytes(result.stdout);
+  // Explicit producer tags are honored:
+  //   - `stdoutKind: "bytes"` (or legacy `stdoutEncoding: "binary"`):
+  //     latin1 byte buffer; pass through.
+  //   - `stdoutKind: "text"`: real Unicode emitted by a text-decoding
+  //     command; UTF-8 encode for the byte-shape pipe.
+  //
+  // For untagged stdout: under ingress normalization, every internal
+  // value is latin1-byte shape, so chars > 0xFF can only appear when
+  // an external custom command emitted real JS Unicode without a tag.
+  // Encode those defensively. Untagged stdout with all chars <= 0xFF
+  // is already byte-shape and passes through verbatim.
+  if (result.stdoutKind === "bytes" || result.stdoutEncoding === "binary") {
+    return unsafeBytesFromLatin1(result.stdout);
+  }
+  if (result.stdoutKind === "text") {
+    return encodeUtf8ToBytes(result.stdout);
+  }
+  const s = result.stdout;
+  for (let i = 0; i < s.length; i++) {
+    if (s.charCodeAt(i) > 0xff) return encodeUtf8ToBytes(s);
+  }
+  return unsafeBytesFromLatin1(s);
 }
 
 /**
@@ -197,5 +271,53 @@ export function bytesOutput(data: ByteString): {
     stdout: latin1FromBytes(data),
     stdoutKind: "bytes",
     stdoutEncoding: "binary",
+  };
+}
+
+/**
+ * Coerce a command's stderr to a `ByteString` using `stderrKind`. Mirrors
+ * `stdoutAsBytes` but reads the stderr-side tag. Defaults to byte-shape
+ * (most commands hand-build stderr from ASCII literals).
+ */
+export function stderrAsBytes(result: {
+  stderr: string;
+  stderrKind?: OutputKind;
+}): ByteString {
+  if (result.stderrKind === "text") {
+    return encodeUtf8ToBytes(result.stderr);
+  }
+  if (result.stderrKind === "bytes") {
+    return unsafeBytesFromLatin1(result.stderr);
+  }
+  const s = result.stderr;
+  for (let i = 0; i < s.length; i++) {
+    if (s.charCodeAt(i) > 0xff) return encodeUtf8ToBytes(s);
+  }
+  return unsafeBytesFromLatin1(s);
+}
+
+/**
+ * Append one command's output to a multi-statement accumulator while
+ * preserving shape. Each side is byte-encoded via its own kind tag, then
+ * concatenated as bytes. Used by statement groups, subshells, control-flow
+ * blocks, and anywhere a sequence of commands feeds a single redirect.
+ *
+ * The returned accumulator is byte-shape (`stdoutKind: "bytes"`); the
+ * downstream consumer (redirection / pipe) treats it as a verbatim byte
+ * buffer regardless of what the individual statements produced.
+ */
+export function appendExecResultBytes(
+  acc: { stdout: string; stderr: string },
+  result: {
+    stdout: string;
+    stderr: string;
+    stdoutKind?: OutputKind;
+    stderrKind?: OutputKind;
+    stdoutEncoding?: "binary";
+  },
+): { stdout: string; stderr: string } {
+  return {
+    stdout: acc.stdout + latin1FromBytes(stdoutAsBytes(result)),
+    stderr: acc.stderr + latin1FromBytes(stderrAsBytes(result)),
   };
 }

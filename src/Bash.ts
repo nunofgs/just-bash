@@ -23,7 +23,11 @@ import {
   createLazyCustomCommand,
   isLazyCommand,
 } from "./custom-commands.js";
-import { encodeUtf8ToBytes, latin1FromBytes } from "./encoding.js";
+import {
+  bytesFromHostText,
+  encodeUtf8ToBytes,
+  latin1FromBytes,
+} from "./encoding.js";
 import { InMemoryFs } from "./fs/in-memory-fs/in-memory-fs.js";
 import { initFilesystem } from "./fs/init.js";
 import type { IFileSystem, InitialFiles } from "./fs/interface.js";
@@ -312,12 +316,22 @@ export class Bash {
   private state: InterpreterState;
 
   constructor(options: BashOptions = {}) {
+    // `InitialFiles` string values are host JS Unicode; InMemoryFs's
+    // `toBuffer` default UTF-8 encodes them on write, so the on-disk
+    // bytes are correct without additional normalization here.
+    // Uint8Array values pass through verbatim.
     const fs = options.fs ?? new InMemoryFs(options.files);
     this.fs = fs;
 
     this.useDefaultLayout = !options.cwd && !options.files;
-    const cwd = options.cwd || (this.useDefaultLayout ? "/home/user" : "/");
-    // Use Map for env to prevent prototype pollution attacks
+    const cwd = bytesFromHostText(
+      options.cwd || (this.useDefaultLayout ? "/home/user" : "/"),
+    );
+    // Use Map for env to prevent prototype pollution attacks.
+    // Host-supplied env values cross the ingress boundary here and are
+    // normalized to the pipeline's byte shape so variable expansion
+    // produces byte-shape strings consistently — no surprise
+    // real-Unicode codepoints leaking from the host environment.
     const env = new Map<string, string>([
       ["HOME", this.useDefaultLayout ? "/home/user" : "/"],
       ["PATH", "/usr/bin:/bin"],
@@ -329,8 +343,11 @@ export class Bash {
       ["PWD", cwd],
       ["OLDPWD", cwd],
       ["OPTIND", "1"], // getopts option index
-      // Add user-provided env vars
-      ...Object.entries(options.env ?? {}),
+      // Add user-provided env vars (normalized to byte shape)
+      ...Object.entries(options.env ?? {}).map<[string, string]>(([k, v]) => [
+        k,
+        bytesFromHostText(v),
+      ]),
     ]);
 
     // Resolve limits: new executionLimits takes precedence, then deprecated individual options
@@ -559,6 +576,13 @@ export class Bash {
     commandLine: string,
     options?: ExecOptions,
   ): Promise<BashExecResult> {
+    // Normalize host JS Unicode source into the pipeline's latin1 byte
+    // shape so every downstream layer (parser, expansion, commands,
+    // pipes, redirects, variables) sees one consistent representation.
+    // Idempotent — already-normalized scripts pass through unchanged,
+    // so recursive `bash -c <script>` and `source` invocations don't
+    // double-encode.
+    commandLine = bytesFromHostText(commandLine);
     if (this.state.callDepth === 0) {
       this.state.commandCount = 0;
     }
@@ -586,8 +610,13 @@ export class Bash {
     this.logger?.info("exec", { command: commandLine });
 
     // Each exec call gets an isolated state copy - like starting a new shell
-    // This ensures exec calls never interfere with each other
-    const effectiveCwd = options?.cwd ?? this.state.cwd;
+    // This ensures exec calls never interfere with each other.
+    // Host-supplied `cwd` is also a string crossing the byte boundary
+    // here; normalize it so $PWD doesn't leak real Unicode codepoints
+    // into expansion.
+    const effectiveCwd = options?.cwd
+      ? bytesFromHostText(options.cwd)
+      : this.state.cwd;
 
     // Determine PWD and cwd for the new shell context
     // If PWD is in the provided env, use it (inherited from parent)
@@ -598,8 +627,9 @@ export class Bash {
     let newCwd = effectiveCwd;
     if (options?.cwd) {
       if (options.env && "PWD" in options.env) {
-        // PWD explicitly provided - use it
-        newPwd = options.env.PWD;
+        // PWD explicitly provided — host string crossing the byte
+        // boundary, normalize so $PWD doesn't leak real Unicode.
+        newPwd = bytesFromHostText(options.env.PWD);
       } else if (options?.env && !("PWD" in options.env)) {
         // PWD not in provided env - use realpath to resolve symlinks
         // This also updates cwd since the shell determines its position from scratch
@@ -620,9 +650,12 @@ export class Bash {
     const execEnv = options?.replaceEnv
       ? new Map<string, string>()
       : new Map(this.state.env);
-    // Merge in options.env
-    if (options?.env) {
-      for (const [key, value] of Object.entries(options.env)) {
+    // Merge in options.env, normalizing host text values to byte shape
+    // at this ingress so internal variable expansions don't see real
+    // Unicode codepoints leaking from outside.
+    const normalizedEnv = encodeEnvForPipeline(options?.env);
+    if (normalizedEnv) {
+      for (const [key, value] of Object.entries(normalizedEnv)) {
         execEnv.set(key, value);
       }
     }
@@ -651,8 +684,11 @@ export class Bash {
       groupStdin: encodeStdinForPipeline(options?.stdin, options?.stdinKind),
       // Cooperative cancellation signal (used by timeout command)
       signal: options?.signal,
-      // Extra arguments injected directly into first command's arg list
-      extraArgs: options?.args,
+      // Extra arguments injected directly into first command's arg list.
+      // Host strings here cross the byte boundary just like commandLine
+      // and stdin; normalize each one so argv reaches commands in the
+      // same latin1-byte shape as parser-produced args.
+      extraArgs: options?.args?.map((a) => bytesFromHostText(a)),
     };
 
     // Normalize indented multi-line scripts (unless rawScript is true)
@@ -974,8 +1010,9 @@ function decodeBinaryToUtf8(s: string): string {
 
 /**
  * Convert user-supplied stdin into the latin1 byte buffer the pipeline
- * expects. `"text"` (the default) is JS Unicode and gets UTF-8 encoded;
- * `"bytes"` is already byte-shaped and passes through verbatim.
+ * expects. `"text"` (the default) is JS Unicode and gets idempotently
+ * UTF-8 encoded via `bytesFromHostText`; `"bytes"` is already
+ * byte-shape and passes through verbatim.
  */
 function encodeStdinForPipeline(
   stdin: string | undefined,
@@ -983,5 +1020,22 @@ function encodeStdinForPipeline(
 ): string | undefined {
   if (stdin === undefined) return undefined;
   if (kind === "bytes") return stdin;
-  return latin1FromBytes(encodeUtf8ToBytes(stdin));
+  return bytesFromHostText(stdin);
 }
+
+/**
+ * Normalize an `ExecOptions.env` map at host→shell ingress so every
+ * value enters the pipeline in byte shape, just like `commandLine`
+ * and `stdin`. Idempotent.
+ */
+function encodeEnvForPipeline(
+  env: Record<string, string> | undefined,
+): Record<string, string> | undefined {
+  if (!env) return env;
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(env)) {
+    out[k] = bytesFromHostText(v);
+  }
+  return out;
+}
+
