@@ -24,6 +24,8 @@ import type {
   WordNode,
 } from "../ast/types.js";
 import {
+  appendExecResultBytes,
+  bytesFromHostText,
   encodeUtf8ToBytes,
   latin1FromBytes,
   readBytesFrom,
@@ -432,8 +434,7 @@ export class Interpreter {
       if (operator === "||" && exitCode === 0) continue;
 
       const result = await this.executePipeline(pipeline);
-      stdout += result.stdout;
-      stderr += result.stderr;
+      ({ stdout, stderr } = appendExecResultBytes({ stdout, stderr }, result));
       exitCode = result.exitCode;
       lastExecutedIndex = i;
       lastPipelineNegated = pipeline.negated;
@@ -469,7 +470,10 @@ export class Interpreter {
       throw new ErrexitError(exitCode, stdout, stderr);
     }
 
-    return result(stdout, stderr, exitCode);
+    // The accumulator above byte-encoded each pipeline's output via
+    // `appendExecResultBytes`, so the buffer is byte-shape. Tag it so any
+    // surrounding redirect treats it verbatim.
+    return { ...result(stdout, stderr, exitCode), stdoutKind: "bytes" };
   }
 
   private async executePipeline(node: PipelineNode): Promise<ExecResult> {
@@ -663,12 +667,13 @@ export class Interpreter {
             .map((line) => line.replace(/^\t+/, ""))
             .join("\n");
         }
-        // Heredocs land here as JS Unicode text; the pipeline contract
-        // expects stdin to be a latin1 byte buffer. UTF-8 encode the
-        // text once at the source so byte consumers downstream see real
-        // bytes and binary writes don't truncate codepoints to their
-        // low byte.
-        content = latin1FromBytes(encodeUtf8ToBytes(content));
+        // Heredoc bodies enter as latin1 byte shape if the script source
+        // crossed `Bash.exec`'s ingress normalization (the typical path),
+        // or as JS Unicode if the heredoc content was built dynamically
+        // by something inside the shell. `bytesFromHostText` is
+        // idempotent: it leaves already byte-shape strings alone and
+        // encodes anything that's still real Unicode.
+        content = bytesFromHostText(content);
         // If this is a non-standard fd (not 0), store in fileDescriptors for -u option
         const fd = redir.fd ?? 0;
         if (fd !== 0) {
@@ -684,12 +689,9 @@ export class Interpreter {
       }
 
       if (redir.operator === "<<<" && redir.target.type === "Word") {
-        // Same byte-encoding step as heredoc — here-strings deliver
-        // JS Unicode text and need to land as bytes.
-        stdin = latin1FromBytes(
-          encodeUtf8ToBytes(
-            `${await expandWord(this.ctx, redir.target as WordNode)}\n`,
-          ),
+        // Here-string content: same idempotent ingress as heredoc.
+        stdin = bytesFromHostText(
+          `${await expandWord(this.ctx, redir.target as WordNode)}\n`,
         );
         continue;
       }

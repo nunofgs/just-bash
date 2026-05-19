@@ -11,6 +11,7 @@
  */
 
 import type { ConditionalExpressionNode } from "../ast/types.js";
+import { decodeBytesToUtf8, unsafeBytesFromLatin1 } from "../encoding.js";
 import { parseArithmeticExpression } from "../parser/arithmetic-parser.js";
 import { Parser } from "../parser/parser.js";
 import { createUserRegex } from "../regex/index.js";
@@ -509,11 +510,16 @@ export function matchPattern(
   nocasematch = false,
   extglob = false,
 ): boolean {
-  const regex = `^${patternToRegexStr(pattern, extglob)}$`;
-  // Use 's' flag (dotAll) so that * matches newlines in the value
-  // This matches bash behavior where patterns like *foo* match multiline values
-  const flags = nocasematch ? "is" : "s";
-  return createUserRegex(regex, flags).test(value);
+  // Both value and pattern are latin1-byte shape (post-Bash.exec
+  // ingress). For codepoint-aware glob matching (real bash with a
+  // UTF-8 locale: `?` matches one codepoint regardless of byte
+  // count), decode both sides and run the regex in `u` mode.
+  const decodedValue = decodeBytesToUtf8(unsafeBytesFromLatin1(value));
+  const decodedPattern = decodeBytesToUtf8(unsafeBytesFromLatin1(pattern));
+  const regex = `^${patternToRegexStr(decodedPattern, extglob)}$`;
+  // 'su' flags: dotAll + Unicode.
+  const flags = nocasematch ? "isu" : "su";
+  return createUserRegex(regex, flags).test(decodedValue);
 }
 
 /**

@@ -5,11 +5,7 @@
  */
 
 import type { CommandNode, PipelineNode } from "../ast/types.js";
-import {
-  encodeUtf8ToBytes,
-  latin1FromBytes,
-  stdoutAsBytes,
-} from "../encoding.js";
+import { latin1FromBytes, stderrAsBytes, stdoutAsBytes } from "../encoding.js";
 import { _performanceNow } from "../security/trusted-globals.js";
 import type { ExecResult } from "../types.js";
 import { BadSubstitutionError, ErrexitError, ExitError } from "./errors.js";
@@ -129,24 +125,27 @@ export async function executePipeline(
     }
 
     if (!isLast) {
-      // Pipeline contract: the next command's stdin is a byte buffer.
-      // `stdoutAsBytes` consults the upstream's explicit `stdoutKind`
-      // (or legacy `stdoutEncoding === "binary"`) and converts text →
-      // UTF-8 bytes / passes byte buffers through. No content-based
-      // heuristics — the producer's metadata is the source of truth.
-      // Check if this pipe is |& (pipe stderr to next command's stdin too)
+      // Pipeline contract under the byte-shape model: stdout is already
+      // a latin1 byte buffer (commands that decode their input have
+      // re-encoded before emitting), so pipe handoff is just a string
+      // slice — no encode/decode here.
+      //
+      // |& pipes stderr + stdout. Use `stderrAsBytes` so a byte-shape
+      // stderr (the common case — ASCII error literals) passes through
+      // verbatim instead of being UTF-8-encoded a second time. The legacy
+      // unconditional `encodeUtf8ToBytes(stderr)` here double-encoded any
+      // command that hand-built stderr from byte-shape strings.
       const pipeStderrToNext = node.pipeStderr?.[i] ?? false;
       if (pipeStderrToNext) {
-        // |& pipes stderr + stdout. stderr is text (no producer marks it
-        // binary today); UTF-8 encode it before concatenating with the
-        // stdout bytes so the merged stream is byte-shaped end-to-end.
         stdin =
-          latin1FromBytes(encodeUtf8ToBytes(result.stderr)) +
+          latin1FromBytes(stderrAsBytes(result)) +
           latin1FromBytes(stdoutAsBytes(result));
       } else {
-        // Regular | only pipes stdout; stderr goes to the parent
         stdin = latin1FromBytes(stdoutAsBytes(result));
-        accumulatedStderr += result.stderr;
+        // accumulatedStderr is byte-shape; encode this command's stderr
+        // via its tag before appending so shape stays consistent across
+        // the multi-stage pipeline.
+        accumulatedStderr += latin1FromBytes(stderrAsBytes(result));
       }
       lastResult = {
         stdout: "",
@@ -162,9 +161,15 @@ export async function executePipeline(
   // In bash, stderr from each pipeline command goes to the terminal (parent),
   // not through the pipe. Only stdout flows through pipes.
   if (accumulatedStderr) {
+    // `accumulatedStderr` is byte-shape (each non-last stage was encoded
+    // via `stderrAsBytes`). Encode the last command's stderr the same way
+    // so the merged buffer stays consistent. The merged stderr is then
+    // byte-shape; tag it so downstream sees the right shape.
     lastResult = {
       ...lastResult,
-      stderr: accumulatedStderr + lastResult.stderr,
+      stderr:
+        accumulatedStderr + latin1FromBytes(stderrAsBytes(lastResult)),
+      stderrKind: "bytes",
     };
   }
 

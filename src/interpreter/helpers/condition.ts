@@ -6,6 +6,7 @@
  */
 
 import type { StatementNode } from "../../ast/types.js";
+import { appendExecResultBytes } from "../../encoding.js";
 import type { InterpreterContext } from "../types.js";
 
 export interface ConditionResult {
@@ -36,8 +37,7 @@ export async function executeCondition(
   try {
     for (const stmt of statements) {
       const result = await ctx.executeStatement(stmt);
-      stdout += result.stdout;
-      stderr += result.stderr;
+      ({ stdout, stderr } = appendExecResultBytes({ stdout, stderr }, result));
       exitCode = result.exitCode;
     }
   } finally {

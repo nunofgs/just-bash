@@ -11,6 +11,7 @@
  */
 
 import type { RedirectionNode, WordNode } from "../ast/types.js";
+import { latin1FromBytes, stdoutAsBytes } from "../encoding.js";
 import type { ExecResult } from "../types.js";
 import {
   expandRedirectTarget,
@@ -50,26 +51,25 @@ async function checkOutputRedirectTarget(
 }
 
 /**
- * Determine the encoding to use for file I/O.
- * If all character codes are <= 127 (ASCII), use binary encoding (byte data).
- * Otherwise, use UTF-8 encoding (text with non-ASCII characters).
- * For performance, only check the first 8KB of large strings.
+ * Encoding for shell-pipeline file writes.
  *
- * Characters in the 128-255 range (e.g. Latin-1: Ü Ö Ä é è) need UTF-8
- * encoding because their multi-byte UTF-8 representation would be lost
- * if stored as single bytes via binary encoding.
+ * Under the byte-shape pipeline contract every internal value is a
+ * latin1-byte buffer (each char's charCodeAt is one file byte). The
+ * common case writes "binary" and the bytes round-trip verbatim.
+ *
+ * The exception: an external custom command may emit real JS Unicode
+ * (chars > 0xFF) without setting `stdoutKind`/`stdoutEncoding`. For
+ * that defensive case we UTF-8-encode at the file boundary so the
+ * codepoints land on disk as proper UTF-8 bytes rather than being
+ * truncated to their low byte.
  */
-function getFileEncoding(content: string): "binary" | "utf8" {
-  const SAMPLE_SIZE = 8192; // 8KB
-
-  // For large strings, only check the first 8KB
-  // This is sufficient since UTF-8 files typically have Unicode chars early
-  const checkLength = Math.min(content.length, SAMPLE_SIZE);
-
-  for (let i = 0; i < checkLength; i++) {
-    if (content.charCodeAt(i) > 127) {
-      return "utf8";
-    }
+function pipelineWriteEncoding(content: string): "binary" | "utf8" {
+  // Full scan matches `stdoutAsBytes()` semantics so a non-ASCII codepoint
+  // past the first 8 KiB doesn't slip through as binary. Only untagged
+  // custom commands reach this path; ingress normalization keeps every
+  // builtin's output latin1-byte shape.
+  for (let i = 0; i < content.length; i++) {
+    if (content.charCodeAt(i) > 0xff) return "utf8";
   }
   return "binary";
 }
@@ -404,28 +404,103 @@ export async function applyRedirections(
   preExpandedTargets?: ExpandedRedirectTargets,
 ): Promise<ExecResult> {
   let { stdout, stderr, exitCode } = result;
+  // Track shape tags as they evolve across merges. A 2>&1 / >&2 merge
+  // converts both halves to byte-shape before concatenating, so the
+  // destination side becomes `"bytes"` regardless of what either side
+  // started as.
+  let stdoutKind = result.stdoutKind;
+  let stderrKind = result.stderrKind;
+  let stdoutEncoding = result.stdoutEncoding;
 
-  // Determine encoding for stdout writes from the producer's explicit
-  // shape rather than guessing at the bytes:
-  //   - `stdoutKind: "bytes"` (or legacy `stdoutEncoding: "binary"` —
-  //     cat, gzip, base64 -d, ...): stdout is already a latin1 byte
-  //     buffer; write binary so the bytes round-trip verbatim.
-  //   - everything else (echo, printf, sed, jq, custom commands that
-  //     leave the field unset): stdout is JS Unicode text; write UTF-8.
+  // Encoding decision for stdout/stderr writes:
+  //   1. Explicit producer tag `stdoutKind: "bytes"` (or legacy
+  //      `stdoutEncoding: "binary"` — cat, gzip, base64 -d, sed, grep,
+  //      awk, tr, uniq, rg, ...): result.stdout is latin1-byte shape.
+  //      Write binary so the bytes round-trip verbatim.
+  //   2. Explicit producer tag `stdoutKind: "text"` (commands that
+  //      decoded their input and emit real Unicode codepoints without
+  //      re-encoding — `textOutput()` callers): write UTF-8 so any
+  //      latin1-range codepoint (`é` = `é`) becomes proper UTF-8
+  //      `c3 a9` on disk rather than the single byte `0xe9`.
+  //   3. Untagged: byte-faithful sniff (`pipelineWriteEncoding`). The
+  //      common internal value post-ingress is latin1-byte shape, so
+  //      the sniff almost always returns "binary". The `> 0xFF` path
+  //      only triggers when an external custom command emits real
+  //      Unicode (codepoint > 0xFF) without setting a tag.
+  const writeEncoding = (
+    kind: ExecResult["stdoutKind"],
+    encoding: ExecResult["stdoutEncoding"],
+    content: string,
+  ): "binary" | "utf8" => {
+    if (kind === "bytes") return "binary";
+    if (kind === "text") return "utf8";
+    if (encoding === "binary") return "binary";
+    return pipelineWriteEncoding(content);
+  };
+  const stdoutEnc = (content: string) =>
+    writeEncoding(stdoutKind, stdoutEncoding, content);
+  // Stderr's shape is signalled by `stderrKind`; the legacy
+  // `stdoutEncoding: "binary"` flag never applied to stderr.
+  const stderrEnc = (content: string) =>
+    writeEncoding(stderrKind, undefined, content);
+  // Convert one half of the result (stdout or stderr) to its latin1-byte
+  // form using its own shape tag. `2>&1` / `>&2` and combined redirects
+  // call this on each side independently before concatenating.
+  const toByteString = (
+    content: string,
+    kind: "text" | "bytes" | undefined,
+    encoding: "binary" | undefined,
+  ): string =>
+    latin1FromBytes(
+      stdoutAsBytes({
+        stdout: content,
+        stdoutKind: kind,
+        stdoutEncoding: encoding,
+      }),
+    );
+  // Merge stderr into stdout (the `2>&1` / `/dev/stdout` family). Both
+  // halves are normalized to bytes via their own shape tags so a
+  // text-tagged side doesn't corrupt a byte-shaped side.
+  const mergeStderrIntoStdout = () => {
+    stdout =
+      toByteString(stdout, stdoutKind, stdoutEncoding) +
+      toByteString(stderr, stderrKind, undefined);
+    stdoutKind = "bytes";
+    stdoutEncoding = undefined;
+    stderr = "";
+    stderrKind = undefined;
+  };
+  // Merge stdout into stderr (the `>&2` / `/dev/stderr` family). Same
+  // byte-normalization pattern as above.
+  const mergeStdoutIntoStderr = () => {
+    stderr =
+      toByteString(stderr, stderrKind, undefined) +
+      toByteString(stdout, stdoutKind, stdoutEncoding);
+    stderrKind = "bytes";
+    stdout = "";
+    stdoutKind = undefined;
+    stdoutEncoding = undefined;
+  };
+
+  // For combined-stream redirects (`&>`, `&>>`, `2>&1`), stdout and
+  // stderr may have different shapes: a `stdoutKind: "text"` stdout
+  // carries real Unicode codepoints that need UTF-8 encoding on disk,
+  // while stderr arrives byte-shape (argv-derived file paths, error
+  // text built from JS literals that are ASCII). Concatenating and
+  // applying stdout's encoding to the merged buffer would re-encode
+  // stderr's bytes a second time.
   //
-  // The default is text — never the content-sampling heuristic. The
-  // sampler reads only the first 8 KiB and would mis-classify long
-  // mostly-ASCII output that happens to have its first non-ASCII char
-  // past the window, picking binary and truncating downstream codepoints
-  // to their low byte.
-  const stdoutIsBytes =
-    result.stdoutKind === "bytes" ||
-    (result.stdoutKind === undefined && result.stdoutEncoding === "binary");
-  const stdoutFileEncoding: "binary" | "utf8" = stdoutIsBytes
-    ? "binary"
-    : "utf8";
-  const getStdoutEncoding = (_content: string): "binary" | "utf8" =>
-    stdoutFileEncoding;
+  // Encode each half independently into the pipeline's latin1-byte
+  // shape, concatenate the bytes, and write binary so the bytes
+  // round-trip verbatim regardless of which half contributed them.
+  const combineForWrite = (): {
+    content: string;
+    encoding: "binary";
+  } => {
+    const stdoutBytes = toByteString(stdout, stdoutKind, stdoutEncoding);
+    const stderrBytes = toByteString(stderr, stderrKind, undefined);
+    return { content: stdoutBytes + stderrBytes, encoding: "binary" };
+  };
 
   for (let i = 0; i < redirections.length; i++) {
     const redir = redirections[i];
@@ -493,8 +568,7 @@ export async function applyRedirections(
           }
           // /dev/stderr redirects stdout to stderr
           if (target === "/dev/stderr") {
-            stderr += stdout;
-            stdout = "";
+            mergeStdoutIntoStderr();
             break;
           }
           // /dev/full always returns ENOSPC when written to
@@ -516,7 +590,7 @@ export async function applyRedirections(
             break;
           }
           // Smart encoding: binary for byte data, UTF-8 for Unicode text
-          await ctx.fs.writeFile(filePath, stdout, getStdoutEncoding(stdout));
+          await ctx.fs.writeFile(filePath, stdout, stdoutEnc(stdout));
           stdout = "";
         } else if (fd === 2) {
           // /dev/stderr is a no-op for stderr - output stays on stderr
@@ -525,8 +599,7 @@ export async function applyRedirections(
           }
           // /dev/stdout redirects stderr to stdout
           if (target === "/dev/stdout") {
-            stdout += stderr;
-            stderr = "";
+            mergeStderrIntoStdout();
             break;
           }
           // /dev/full always returns ENOSPC when written to
@@ -554,7 +627,7 @@ export async function applyRedirections(
               break;
             }
             // Smart encoding: binary for byte data, UTF-8 for Unicode text
-            await ctx.fs.writeFile(filePath, stderr, getFileEncoding(stderr));
+            await ctx.fs.writeFile(filePath, stderr, stderrEnc(stderr));
             stderr = "";
           }
         }
@@ -570,8 +643,7 @@ export async function applyRedirections(
           }
           // /dev/stderr redirects stdout to stderr
           if (target === "/dev/stderr") {
-            stderr += stdout;
-            stdout = "";
+            mergeStdoutIntoStderr();
             break;
           }
           // /dev/full always returns ENOSPC when written to
@@ -595,7 +667,7 @@ export async function applyRedirections(
             break;
           }
           // Smart encoding: binary for byte data, UTF-8 for Unicode text
-          await ctx.fs.appendFile(filePath, stdout, getStdoutEncoding(stdout));
+          await ctx.fs.appendFile(filePath, stdout, stdoutEnc(stdout));
           stdout = "";
         } else if (fd === 2) {
           // /dev/stderr is a no-op for stderr - output stays on stderr
@@ -604,8 +676,7 @@ export async function applyRedirections(
           }
           // /dev/stdout redirects stderr to stdout
           if (target === "/dev/stdout") {
-            stdout += stderr;
-            stderr = "";
+            mergeStderrIntoStdout();
             break;
           }
           // /dev/full always returns ENOSPC when written to
@@ -627,7 +698,7 @@ export async function applyRedirections(
             break;
           }
           // Smart encoding: binary for byte data, UTF-8 for Unicode text
-          await ctx.fs.appendFile(filePath2, stderr, getFileEncoding(stderr));
+          await ctx.fs.appendFile(filePath2, stderr, stderrEnc(stderr));
           stderr = "";
         }
         break;
@@ -688,21 +759,12 @@ export async function applyRedirections(
         }
         // >&2, 1>&2, 1<&2: redirect stdout to stderr
         if (target === "2" || target === "&2") {
-          if (fd === 1) {
-            stderr += stdout;
-            stdout = "";
-          }
+          if (fd === 1) mergeStdoutIntoStderr();
         }
-        // 2>&1, 2<&1: redirect stderr to stdout
+        // 2>&1, 2<&1: redirect stderr to stdout. `1>&1` is a no-op but
+        // the original code fell through to the same merge, so keep that.
         else if (target === "1" || target === "&1") {
-          if (fd === 2) {
-            stdout += stderr;
-            stderr = "";
-          } else {
-            // 1>&1 is a no-op, but other fds redirect to stdout
-            stdout += stderr;
-            stderr = "";
-          }
+          mergeStderrIntoStdout();
         }
         // Handle writing to a user-allocated FD (>&$fd)
         else {
@@ -718,14 +780,14 @@ export async function applyRedirections(
                 await ctx.fs.appendFile(
                   resolvedPath,
                   stdout,
-                  getStdoutEncoding(stdout),
+                  stdoutEnc(stdout),
                 );
                 stdout = "";
               } else if (fd === 2) {
                 await ctx.fs.appendFile(
                   resolvedPath,
                   stderr,
-                  getFileEncoding(stderr),
+                  stderrEnc(stderr),
                 );
                 stderr = "";
               }
@@ -738,14 +800,14 @@ export async function applyRedirections(
                   await ctx.fs.appendFile(
                     parsed.path,
                     stdout,
-                    getStdoutEncoding(stdout),
+                    stdoutEnc(stdout),
                   );
                   stdout = "";
                 } else if (fd === 2) {
                   await ctx.fs.appendFile(
                     parsed.path,
                     stderr,
-                    getFileEncoding(stderr),
+                    stderrEnc(stderr),
                   );
                   stderr = "";
                 }
@@ -759,10 +821,7 @@ export async function applyRedirections(
                 // stdout remains as is
               } else if (sourceFd === 2) {
                 // Target FD duplicates stderr - redirect stdout to stderr
-                if (fd === 1) {
-                  stderr += stdout;
-                  stdout = "";
-                }
+                if (fd === 1) mergeStdoutIntoStderr();
               } else {
                 // Check if sourceFd points to a file
                 const sourceInfo = ctx.state.fileDescriptors?.get(sourceFd);
@@ -772,14 +831,14 @@ export async function applyRedirections(
                     await ctx.fs.appendFile(
                       resolvedPath,
                       stdout,
-                      getStdoutEncoding(stdout),
+                      stdoutEnc(stdout),
                     );
                     stdout = "";
                   } else if (fd === 2) {
                     await ctx.fs.appendFile(
                       resolvedPath,
                       stderr,
-                      getFileEncoding(stderr),
+                      stderrEnc(stderr),
                     );
                     stderr = "";
                   }
@@ -819,12 +878,8 @@ export async function applyRedirections(
             }
             if (redir.fd == null) {
               // >&word (no explicit fd) - write both stdout and stderr to the file
-              const combined = stdout + stderr;
-              await ctx.fs.writeFile(
-                filePath,
-                combined,
-                getStdoutEncoding(combined),
-              );
+              const merged = combineForWrite();
+              await ctx.fs.writeFile(filePath, merged.content, merged.encoding);
               stdout = "";
               stderr = "";
             } else if (fd === 1) {
@@ -832,12 +887,12 @@ export async function applyRedirections(
               await ctx.fs.writeFile(
                 filePath,
                 stdout,
-                getStdoutEncoding(stdout),
+                stdoutEnc(stdout),
               );
               stdout = "";
             } else if (fd === 2) {
               // 2>&word - redirect stderr to file
-              await ctx.fs.writeFile(filePath, stderr, getFileEncoding(stderr));
+              await ctx.fs.writeFile(filePath, stderr, stderrEnc(stderr));
               stderr = "";
             }
           }
@@ -863,9 +918,10 @@ export async function applyRedirections(
           stdout = "";
           break;
         }
-        // Smart encoding: binary for byte data, UTF-8 for Unicode text
-        const combined = stdout + stderr;
-        await ctx.fs.writeFile(filePath, combined, getStdoutEncoding(combined));
+        // Encode each half into byte shape independently, then concat
+        // and write binary — see combineForWrite for the rationale.
+        const merged = combineForWrite();
+        await ctx.fs.writeFile(filePath, merged.content, merged.encoding);
         stdout = "";
         stderr = "";
         break;
@@ -892,13 +948,10 @@ export async function applyRedirections(
           stdout = "";
           break;
         }
-        // Smart encoding: binary for byte data, UTF-8 for Unicode text
-        const combined = stdout + stderr;
-        await ctx.fs.appendFile(
-          filePath,
-          combined,
-          getStdoutEncoding(combined),
-        );
+        // Encode each half into byte shape independently, then concat
+        // and append binary — see combineForWrite for the rationale.
+        const merged = combineForWrite();
+        await ctx.fs.appendFile(filePath, merged.content, merged.encoding);
         stdout = "";
         stderr = "";
         break;
@@ -912,16 +965,15 @@ export async function applyRedirections(
   if (fd1Info) {
     if (fd1Info === "__dupout__:2") {
       // fd 1 is duplicated to fd 2 - stdout goes to stderr
-      stderr += stdout;
-      stdout = "";
+      mergeStdoutIntoStderr();
     } else if (fd1Info.startsWith("__file__:")) {
       // fd 1 is redirected to a file
       const filePath = fd1Info.slice(9);
-      await ctx.fs.appendFile(filePath, stdout, getStdoutEncoding(stdout));
+      await ctx.fs.appendFile(filePath, stdout, stdoutEnc(stdout));
       stdout = "";
     } else if (fd1Info.startsWith("__file_append__:")) {
       const filePath = fd1Info.slice(16);
-      await ctx.fs.appendFile(filePath, stdout, getStdoutEncoding(stdout));
+      await ctx.fs.appendFile(filePath, stdout, stdoutEnc(stdout));
       stdout = "";
     }
   }
@@ -931,28 +983,29 @@ export async function applyRedirections(
   if (fd2Info) {
     if (fd2Info === "__dupout__:1") {
       // fd 2 is duplicated to fd 1 - stderr goes to stdout
-      stdout += stderr;
-      stderr = "";
+      mergeStderrIntoStdout();
     } else if (fd2Info.startsWith("__file__:")) {
       const filePath = fd2Info.slice(9);
-      await ctx.fs.appendFile(filePath, stderr, getFileEncoding(stderr));
+      await ctx.fs.appendFile(filePath, stderr, stderrEnc(stderr));
       stderr = "";
     } else if (fd2Info.startsWith("__file_append__:")) {
       const filePath = fd2Info.slice(16);
-      await ctx.fs.appendFile(filePath, stderr, getFileEncoding(stderr));
+      await ctx.fs.appendFile(filePath, stderr, stderrEnc(stderr));
       stderr = "";
     }
   }
 
   const finalResult = makeResult(stdout, stderr, exitCode);
-  // Preserve the upstream's stdout shape through the redirection layer so
-  // the next stage (pipeline glue, output boundary) can tell bytes-shaped
-  // output from text-shaped output. Both the new `stdoutKind` field and
-  // the legacy `stdoutEncoding` alias are forwarded.
-  if (result.stdoutKind) {
-    finalResult.stdoutKind = result.stdoutKind;
+  // Forward the mutable shape tags (post-merge), not the original ones.
+  // A 2>&1 / >&2 merge converts the destination side to byte-shape, so we
+  // must propagate that — not the upstream's pre-merge tag.
+  if (stdoutKind) {
+    finalResult.stdoutKind = stdoutKind;
   }
-  if (result.stdoutEncoding === "binary") {
+  if (stderrKind) {
+    finalResult.stderrKind = stderrKind;
+  }
+  if (stdoutEncoding === "binary") {
     finalResult.stdoutEncoding = "binary";
   }
   return finalResult;

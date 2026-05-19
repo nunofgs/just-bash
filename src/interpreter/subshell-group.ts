@@ -12,6 +12,7 @@ import type {
   SubshellNode,
   WordNode,
 } from "../ast/types.js";
+import { appendExecResultBytes } from "../encoding.js";
 import { Parser } from "../parser/parser.js";
 import type { ParseException } from "../parser/types.js";
 import type { ExecResult } from "../types.js";
@@ -138,8 +139,10 @@ export async function executeSubshell(
   try {
     for (const stmt of node.body) {
       const res = await executeStatement(stmt);
-      stdout += res.stdout;
-      stderr += res.stderr;
+      // Byte-encode each statement's output via its own shape tags so a
+      // text-tagged inner command's codepoints survive a redirect on the
+      // surrounding subshell/group.
+      ({ stdout, stderr } = appendExecResultBytes({ stdout, stderr }, res));
       exitCode = res.exitCode;
     }
   } catch (error) {
@@ -154,7 +157,12 @@ export async function executeSubshell(
       stdout += error.stdout;
       stderr += error.stderr;
       // Apply output redirections before returning
-      const bodyResult = result(stdout, stderr, 0);
+      // Body buffer is byte-shape (see appendExecResultBytes); tag so the
+      // redirect layer writes verbatim binary.
+      const bodyResult: ExecResult = {
+        ...result(stdout, stderr, 0),
+        stdoutKind: "bytes",
+      };
       return applyRedirections(ctx, bodyResult, node.redirections);
     }
     // BreakError/ContinueError should NOT propagate out of subshell
@@ -163,7 +171,12 @@ export async function executeSubshell(
       stdout += error.stdout;
       stderr += error.stderr;
       // Apply output redirections before returning
-      const bodyResult = result(stdout, stderr, 0);
+      // Body buffer is byte-shape (see appendExecResultBytes); tag so the
+      // redirect layer writes verbatim binary.
+      const bodyResult: ExecResult = {
+        ...result(stdout, stderr, 0),
+        stdoutKind: "bytes",
+      };
       return applyRedirections(ctx, bodyResult, node.redirections);
     }
     // ExitError in subshell should NOT propagate - just return the exit code
@@ -171,8 +184,10 @@ export async function executeSubshell(
     if (error instanceof ExitError) {
       stdout += error.stdout;
       stderr += error.stderr;
-      // Apply output redirections before returning
-      const bodyResult = result(stdout, stderr, error.exitCode);
+      const bodyResult: ExecResult = {
+        ...result(stdout, stderr, error.exitCode),
+        stdoutKind: "bytes",
+      };
       return applyRedirections(ctx, bodyResult, node.redirections);
     }
     // ReturnError in subshell (e.g., f() ( return 42; )) should also just exit
@@ -180,32 +195,38 @@ export async function executeSubshell(
     if (error instanceof ReturnError) {
       stdout += error.stdout;
       stderr += error.stderr;
-      // Apply output redirections before returning
-      const bodyResult = result(stdout, stderr, error.exitCode);
+      const bodyResult: ExecResult = {
+        ...result(stdout, stderr, error.exitCode),
+        stdoutKind: "bytes",
+      };
       return applyRedirections(ctx, bodyResult, node.redirections);
     }
     if (error instanceof ErrexitError) {
-      // Apply output redirections before propagating
-      const bodyResult = result(
-        stdout + error.stdout,
-        stderr + error.stderr,
-        error.exitCode,
-      );
+      const bodyResult: ExecResult = {
+        ...result(
+          stdout + error.stdout,
+          stderr + error.stderr,
+          error.exitCode,
+        ),
+        stdoutKind: "bytes",
+      };
       return applyRedirections(ctx, bodyResult, node.redirections);
     }
-    // Apply output redirections before returning
-    const bodyResult = result(
-      stdout,
-      `${stderr}${getErrorMessage(error)}\n`,
-      1,
-    );
+    const bodyResult: ExecResult = {
+      ...result(stdout, `${stderr}${getErrorMessage(error)}\n`, 1),
+      stdoutKind: "bytes",
+    };
     return applyRedirections(ctx, bodyResult, node.redirections);
   }
 
   restore();
 
-  // Apply output redirections
-  const bodyResult = result(stdout, stderr, exitCode);
+  // Body buffer is byte-shape (see appendExecResultBytes); tag so the redirect
+  // layer treats it verbatim.
+  const bodyResult: ExecResult = {
+    ...result(stdout, stderr, exitCode),
+    stdoutKind: "bytes",
+  };
   return applyRedirections(ctx, bodyResult, node.redirections);
 }
 
@@ -281,8 +302,10 @@ export async function executeGroup(
   try {
     for (const stmt of node.body) {
       const res = await executeStatement(stmt);
-      stdout += res.stdout;
-      stderr += res.stderr;
+      // Byte-encode each statement's output via its own shape tags so a
+      // text-tagged inner command's codepoints survive a redirect on the
+      // surrounding subshell/group.
+      ({ stdout, stderr } = appendExecResultBytes({ stdout, stderr }, res));
       exitCode = res.exitCode;
     }
   } catch (error) {
@@ -300,14 +323,21 @@ export async function executeGroup(
       error.prependOutput(stdout, stderr);
       throw error;
     }
-    return result(stdout, `${stderr}${getErrorMessage(error)}\n`, 1);
+    return {
+      ...result(stdout, `${stderr}${getErrorMessage(error)}\n`, 1),
+      stdoutKind: "bytes",
+    };
   }
 
   // Restore groupStdin
   ctx.state.groupStdin = savedGroupStdin;
 
-  // Apply output redirections
-  const bodyResult = result(stdout, stderr, exitCode);
+  // Body buffer is byte-shape (see appendExecResultBytes); tag so the redirect
+  // layer treats it verbatim.
+  const bodyResult: ExecResult = {
+    ...result(stdout, stderr, exitCode),
+    stdoutKind: "bytes",
+  };
   return applyRedirections(ctx, bodyResult, node.redirections);
 }
 

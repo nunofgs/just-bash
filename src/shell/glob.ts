@@ -8,6 +8,7 @@
  * - [...] (character classes)
  */
 
+import { decodeBytesToUtf8, unsafeBytesFromLatin1 } from "../encoding.js";
 import type { IFileSystem } from "../fs/interface.js";
 import { ExecutionLimitError } from "../interpreter/errors.js";
 import { createUserRegex, type RegexLike } from "../regex/index.js";
@@ -792,19 +793,24 @@ export class GlobExpander {
   }
 
   /**
-   * Match a filename against a glob pattern
+   * Match a filename against a glob pattern. Both arguments are
+   * latin1-byte shape (post-Bash.exec ingress); decode for
+   * codepoint-aware matching so `?` matches one codepoint and ranges
+   * work on Unicode chars, then run the regex in `u` mode.
    */
   matchPattern(name: string, pattern: string): boolean {
-    const regex = this.patternToRegex(pattern);
-    return regex.test(name);
+    const decodedName = decodeBytesToUtf8(unsafeBytesFromLatin1(name));
+    const decodedPattern = decodeBytesToUtf8(unsafeBytesFromLatin1(pattern));
+    const regex = this.patternToRegex(decodedPattern);
+    return regex.test(decodedName);
   }
 
   /**
-   * Convert a glob pattern to a RegExp
+   * Convert a glob pattern to a RegExp.
    */
   private patternToRegex(pattern: string): RegexLike {
     const regex = this.patternToRegexStr(pattern);
-    return createUserRegex(`^${regex}$`);
+    return createUserRegex(`^${regex}$`, "u");
   }
 
   /**

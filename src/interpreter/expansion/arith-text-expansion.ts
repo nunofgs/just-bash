@@ -6,6 +6,7 @@
  * expand to $(( 1 + 2 * 3 )) = 7, not $(( (1+2) * 3 )) = 9.
  */
 
+import { latin1FromBytes, stdoutAsBytes } from "../../encoding.js";
 import type { InterpreterContext } from "../types.js";
 import { getVariable } from "./variable.js";
 
@@ -173,8 +174,13 @@ export async function expandSubscriptForAssocArray(
           const cmdResult = await ctx.execFn(cmdStr, {
             signal: ctx.state.signal,
           });
-          // Strip trailing newlines like command substitution does
-          result += cmdResult.stdout.replace(/\n+$/, "");
+          // Coerce to byte-shape via the result's kind tag so a text-tagged
+          // command (`ls`, `tree`, etc.) is encoded once instead of leaking
+          // raw Unicode into the byte-shape shell pipeline.
+          result += latin1FromBytes(stdoutAsBytes(cmdResult)).replace(
+            /\n+$/,
+            "",
+          );
           // Forward stderr to expansion stderr
           if (cmdResult.stderr) {
             ctx.state.expansionStderr =
@@ -222,7 +228,9 @@ export async function expandSubscriptForAssocArray(
         const cmdResult = await ctx.execFn(cmdStr, {
           signal: ctx.state.signal,
         });
-        result += cmdResult.stdout.replace(/\n+$/, "");
+        // Same byte-shape coercion as the $() form above; backtick
+        // substitution flows through the identical pipeline.
+        result += latin1FromBytes(stdoutAsBytes(cmdResult)).replace(/\n+$/, "");
         if (cmdResult.stderr) {
           ctx.state.expansionStderr =
             (ctx.state.expansionStderr || "") + cmdResult.stderr;
