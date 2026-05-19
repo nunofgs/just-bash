@@ -546,9 +546,11 @@ async function executeJSInner(
     };
   }
 
-  // js-exec emits text; the pipeline handles encoding.
+  // js-exec emits decoded JS output (console.log strings are JS
+  // Unicode); tag so redirects / pipes encode codepoints as UTF-8.
   return {
     ...bridgeOutput,
+    stdoutKind: "text" as const,
   };
 }
 

@@ -43,11 +43,13 @@ export async function cmdBehead(
     rows.map((row) => row.map((v) => formatValue(v)).join(",")).join("\n") +
     "\n";
 
-  // xan emits text; the pipeline handles encoding.
+  // xan emits decoded CSV/text; tag so redirects / pipes encode
+  // codepoints as UTF-8.
   return {
     stdout: output,
     stderr: "",
     exitCode: 0,
+    stdoutKind: "text" as const,
   };
 }
 
@@ -100,11 +102,13 @@ export async function cmdSample(
   if (error) return error;
 
   if (data.length <= num) {
-    // xan emits text; the pipeline handles encoding.
+    // xan emits decoded CSV/text; tag so redirects / pipes encode
+    // codepoints as UTF-8.
     return {
       stdout: formatCsv(headers, data),
       stderr: "",
       exitCode: 0,
+      stdoutKind: "text" as const,
     };
   }
 
@@ -127,11 +131,13 @@ export async function cmdSample(
     .sort((a, b) => a - b)
     .map((i) => data[i]);
 
-  // xan emits text; the pipeline handles encoding.
+  // xan emits decoded CSV/text; tag so redirects / pipes encode
+  // codepoints as UTF-8.
   return {
     stdout: formatCsv(headers, sampled),
     stderr: "",
     exitCode: 0,
+    stdoutKind: "text" as const,
   };
 }
 
@@ -216,11 +222,13 @@ export async function cmdCat(
     }
   }
 
-  // xan emits text; the pipeline handles encoding.
+  // xan emits decoded CSV/text; tag so redirects / pipes encode
+  // codepoints as UTF-8.
   return {
     stdout: formatCsv(allHeaders, allData),
     stderr: "",
     exitCode: 0,
+    stdoutKind: "text" as const,
   };
 }
 
@@ -292,11 +300,13 @@ export async function cmdSearch(
     return invert ? !matches : matches;
   });
 
-  // xan emits text; the pipeline handles encoding.
+  // xan emits decoded CSV/text; tag so redirects / pipes encode
+  // codepoints as UTF-8.
   return {
     stdout: formatCsv(headers, filtered),
     stderr: "",
     exitCode: 0,
+    stdoutKind: "text" as const,
   };
 }
 
@@ -381,11 +391,13 @@ export async function cmdFlatmap(
     }
   }
 
-  // xan emits text; the pipeline handles encoding.
+  // xan emits decoded CSV/text; tag so redirects / pipes encode
+  // codepoints as UTF-8.
   return {
     stdout: formatCsv(newHeaders, newData),
     stderr: "",
     exitCode: 0,
+    stdoutKind: "text" as const,
   };
 }
 

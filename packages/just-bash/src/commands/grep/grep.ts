@@ -1,4 +1,9 @@
-import { decodeBytesToUtf8 } from "../../encoding.js";
+import {
+  decodeBytesToUtf8,
+  encodeUtf8ToBytes,
+  latin1FromBytes,
+  unsafeBytesFromLatin1,
+} from "../../encoding.js";
 import type { UserRegex } from "../../regex/index.js";
 import type { Command, CommandContext, ExecResult } from "../../types.js";
 import { matchGlob } from "../../utils/glob.js";
@@ -208,8 +213,12 @@ export const grepCommand: Command = {
     let regex: UserRegex;
     let kResetGroup: number | undefined;
     let preFilter: import("../search-engine/regex.js").PreFilter | undefined;
+    // Pattern arrives in latin1-byte shape (post-Bash.exec ingress).
+    // Decode to real Unicode so the regex engine sees multibyte chars
+    // as single codepoints — matches the decoded stdin/file content.
+    const decodedPattern = decodeBytesToUtf8(unsafeBytesFromLatin1(pattern));
     try {
-      const regexResult = buildRegex(pattern, {
+      const regexResult = buildRegex(decodedPattern, {
         mode: regexMode,
         ignoreCase,
         wholeWord,
@@ -245,9 +254,11 @@ export const grepCommand: Command = {
       if (quietMode) {
         return { stdout: "", stderr: "", exitCode: result.matched ? 0 : 1 };
       }
-      // grep emits text; the pipeline handles encoding.
+      // Pipeline contract: emit byte-shape stdout. `result.output` is
+      // real Unicode (regex worked on decoded text); re-encode to
+      // latin1 byte shape.
       return {
-        stdout: result.output,
+        stdout: latin1FromBytes(encodeUtf8ToBytes(result.output)),
         stderr: "",
         exitCode: result.matched ? 0 : 1,
       };
@@ -457,7 +468,10 @@ export const grepCommand: Command = {
     }
 
     return {
-      stdout,
+      // File-mode `stdout` is a concatenation of decoded match output
+      // and file-name banners (ASCII). Re-encode to latin1 byte shape
+      // so the pipeline carries bytes uniformly.
+      stdout: latin1FromBytes(encodeUtf8ToBytes(stdout)),
       stderr,
       exitCode,
     };

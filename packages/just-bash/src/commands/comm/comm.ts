@@ -160,11 +160,13 @@ export const commCommand: Command = {
       }
     }
 
-    // comm emits text; the pipeline handles encoding.
+    // comm decodes inputs to compare lines as codepoints; tag the
+    // output "text" so redirects / pipes encode codepoints as UTF-8.
     return {
       stdout: output,
       stderr: "",
       exitCode: 0,
+      stdoutKind: "text" as const,
     };
   },
 };

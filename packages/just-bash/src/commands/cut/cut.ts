@@ -171,13 +171,16 @@ export const cutCommand: Command = {
         stdout: output,
         stderr: "",
         exitCode: 0,
+        // Tag as text so the redirect / pipe / variable boundaries
+        // re-encode the decoded codepoints as proper UTF-8 bytes,
+        // instead of truncating each char to its low byte.
+        stdoutKind: "text" as const,
       };
     }
     return {
       stdout: output,
       stderr: "",
       exitCode: 0,
-      stdoutKind: "bytes",
       stdoutEncoding: "binary",
     };
   },

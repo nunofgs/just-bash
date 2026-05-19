@@ -128,11 +128,13 @@ export const pasteCommand: Command = {
       }
     }
 
-    // paste emits text; the pipeline handles encoding.
+    // paste decodes stdin to interleave by codepoint; tag the output
+    // "text" so redirects / pipes encode codepoints as UTF-8.
     return {
       stdout: output,
       stderr: "",
       exitCode: 0,
+      stdoutKind: "text" as const,
     };
   },
 };

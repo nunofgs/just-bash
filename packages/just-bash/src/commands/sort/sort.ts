@@ -205,10 +205,14 @@ export const sortCommand: Command = {
       return { stdout: "", stderr: "", exitCode: 0 };
     }
 
+    // sort decodes the file content to compare lines codepoint-wise
+    // (especially under -f case-fold); tag the output "text" so
+    // redirects / pipes encode codepoints as UTF-8 on the way out.
     return {
       stdout: output,
       stderr: "",
       exitCode: 0,
+      stdoutKind: "text" as const,
     };
   },
 };

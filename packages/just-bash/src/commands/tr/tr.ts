@@ -1,4 +1,9 @@
-import { decodeBytesToUtf8 } from "../../encoding.js";
+import {
+  decodeBytesToUtf8,
+  encodeUtf8ToBytes,
+  latin1FromBytes,
+  unsafeBytesFromLatin1,
+} from "../../encoding.js";
 import { sanitizeErrorMessage } from "../../fs/sanitize-error.js";
 import type { Command, CommandContext, ExecResult } from "../../types.js";
 import { parseArgs } from "../../utils/args.js";
@@ -160,11 +165,19 @@ export const trCommand: Command = {
       };
     }
 
+    // Translate codepoint-by-codepoint. Both the SET args (post-Bash.exec
+    // ingress they're latin1-byte shape) and stdin must be decoded to
+    // real Unicode so a multibyte char like `é` matches itself.
     let set1Raw: string;
     let set2: string;
     try {
-      set1Raw = expandRange(sets[0]);
-      set2 = sets.length > 1 ? expandRange(sets[1]) : "";
+      set1Raw = expandRange(
+        decodeBytesToUtf8(unsafeBytesFromLatin1(sets[0])),
+      );
+      set2 =
+        sets.length > 1
+          ? expandRange(decodeBytesToUtf8(unsafeBytesFromLatin1(sets[1])))
+          : "";
     } catch (e) {
       const message = sanitizeErrorMessage((e as Error).message);
       return {
@@ -245,9 +258,9 @@ export const trCommand: Command = {
       }
     }
 
-    // tr emits text; the pipeline handles encoding.
+    // Pipeline contract: emit byte-shape stdout.
     return {
-      stdout: output,
+      stdout: latin1FromBytes(encodeUtf8ToBytes(output)),
       stderr: "",
       exitCode: 0,
     };

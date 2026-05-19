@@ -640,6 +640,7 @@ export const sqlite3Command: Command = {
             stdout,
             stderr: `Error: ${stmtResult.error}\n`,
             exitCode: 1,
+            stdoutKind: "text" as const,
           };
         }
         stdout += `Error: ${stmtResult.error}\n`;
@@ -671,15 +672,18 @@ export const sqlite3Command: Command = {
           stdout,
           stderr: `sqlite3: failed to write database: ${message}\n`,
           exitCode: 1,
+          stdoutKind: "text" as const,
         };
       }
     }
 
-    // sqlite3 emits text; the pipeline handles encoding.
+    // sqlite3 emits decoded query result text; tag so redirects /
+    // pipes encode codepoints as UTF-8 on the way out.
     return {
       stdout,
       stderr: "",
       exitCode: hadError && options.bail ? 1 : 0,
+      stdoutKind: "text" as const,
     };
   },
 };

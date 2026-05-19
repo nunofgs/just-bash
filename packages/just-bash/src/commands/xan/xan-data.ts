@@ -33,11 +33,13 @@ export async function cmdTranspose(
     // Just transpose headers to single column
     const newHeaders = ["column"];
     const newData: CsvData = headers.map((h) => ({ column: h }));
-    // xan emits text; the pipeline handles encoding.
+    // xan emits decoded CSV/text; tag so redirects / pipes encode
+    // codepoints as UTF-8.
     return {
       stdout: formatCsv(newHeaders, newData),
       stderr: "",
       exitCode: 0,
+      stdoutKind: "text" as const,
     };
   }
 
@@ -60,11 +62,13 @@ export async function cmdTranspose(
     newData.push(newRow);
   }
 
-  // xan emits text; the pipeline handles encoding.
+  // xan emits decoded CSV/text; tag so redirects / pipes encode
+  // codepoints as UTF-8.
   return {
     stdout: formatCsv(newHeaders, newData),
     stderr: "",
     exitCode: 0,
+    stdoutKind: "text" as const,
   };
 }
 
@@ -106,11 +110,13 @@ export async function cmdShuffle(
     [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
   }
 
-  // xan emits text; the pipeline handles encoding.
+  // xan emits decoded CSV/text; tag so redirects / pipes encode
+  // codepoints as UTF-8.
   return {
     stdout: formatCsv(headers, shuffled),
     stderr: "",
     exitCode: 0,
+    stdoutKind: "text" as const,
   };
 }
 
@@ -184,11 +190,13 @@ export async function cmdFixlengths(
 
   // Output as CSV
   const output = Papa.unparse(fixed);
-  // xan emits text; the pipeline handles encoding.
+  // xan emits decoded CSV/text; tag so redirects / pipes encode
+  // codepoints as UTF-8.
   return {
     stdout: `${output.replace(/\r\n/g, "\n")}\n`,
     stderr: "",
     exitCode: 0,
+    stdoutKind: "text" as const,
   };
 }
 
@@ -261,22 +269,26 @@ export async function cmdSplit(
       const filePath = ctx.fs.resolvePath(outPath, fileName);
       await ctx.fs.writeFile(filePath, formatCsv(headers, nonEmptyParts[i]));
     }
-    // xan emits text; the pipeline handles encoding.
+    // xan emits decoded CSV/text; tag so redirects / pipes encode
+    // codepoints as UTF-8.
     return {
       stdout: `Split into ${nonEmptyParts.length} parts\n`,
       stderr: "",
       exitCode: 0,
+      stdoutKind: "text" as const,
     };
   } catch {
     // If we can't write files, output info about what would be created
     const output = nonEmptyParts
       .map((p, i) => `Part ${i + 1}: ${p.length} rows`)
       .join("\n");
-    // xan emits text; the pipeline handles encoding.
+    // xan emits decoded CSV/text; tag so redirects / pipes encode
+    // codepoints as UTF-8.
     return {
       stdout: `${output}\n`,
       stderr: "",
       exitCode: 0,
+      stdoutKind: "text" as const,
     };
   }
 }
@@ -390,22 +402,26 @@ export async function cmdPartition(
       const filePath = ctx.fs.resolvePath(outPath, fileName);
       await ctx.fs.writeFile(filePath, formatCsv(headers, rows));
     }
-    // xan emits text; the pipeline handles encoding.
+    // xan emits decoded CSV/text; tag so redirects / pipes encode
+    // codepoints as UTF-8.
     return {
       stdout: `Partitioned into ${groups.size} files by '${column}'\n`,
       stderr: "",
       exitCode: 0,
+      stdoutKind: "text" as const,
     };
   } catch {
     // Output summary if can't write
     const output = Array.from(groups.entries())
       .map(([val, rows]) => `${val}: ${rows.length} rows`)
       .join("\n");
-    // xan emits text; the pipeline handles encoding.
+    // xan emits decoded CSV/text; tag so redirects / pipes encode
+    // codepoints as UTF-8.
     return {
       stdout: `${output}\n`,
       stderr: "",
       exitCode: 0,
+      stdoutKind: "text" as const,
     };
   }
 }
@@ -456,11 +472,13 @@ async function cmdToJson(
 
   // Real xan always pretty prints
   const json = JSON.stringify(data, null, 2);
-  // xan emits text; the pipeline handles encoding.
+  // xan emits decoded CSV/text; tag so redirects / pipes encode
+  // codepoints as UTF-8.
   return {
     stdout: `${json}\n`,
     stderr: "",
     exitCode: 0,
+    stdoutKind: "text" as const,
   };
 }
 
@@ -541,11 +559,13 @@ async function cmdFromJson(
     }
 
     if (data.length === 0) {
-      // xan emits text; the pipeline handles encoding.
+      // xan emits decoded CSV/text; tag so redirects / pipes encode
+      // codepoints as UTF-8.
       return {
         stdout: "\n",
         stderr: "",
         exitCode: 0,
+        stdoutKind: "text" as const,
       };
     }
 
@@ -564,21 +584,25 @@ async function cmdFromJson(
         }
         return obj;
       });
-      // xan emits text; the pipeline handles encoding.
+      // xan emits decoded CSV/text; tag so redirects / pipes encode
+      // codepoints as UTF-8.
       return {
         stdout: formatCsv(headers as string[], csvData),
         stderr: "",
         exitCode: 0,
+        stdoutKind: "text" as const,
       };
     }
 
     // Array of objects - real xan outputs columns in alphabetical order
     const headers = Object.keys(data[0] as object).sort();
-    // xan emits text; the pipeline handles encoding.
+    // xan emits decoded CSV/text; tag so redirects / pipes encode
+    // codepoints as UTF-8.
     return {
       stdout: formatCsv(headers, data as CsvData),
       stderr: "",
       exitCode: 0,
+      stdoutKind: "text" as const,
     };
   } catch {
     return {

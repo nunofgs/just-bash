@@ -4,7 +4,12 @@
  * This is the new implementation using proper lexer/parser/interpreter architecture.
  */
 
-import { decodeBytesToUtf8 } from "../../encoding.js";
+import {
+  decodeBytesToUtf8,
+  encodeUtf8ToBytes,
+  latin1FromBytes,
+  unsafeBytesFromLatin1,
+} from "../../encoding.js";
 import { mapToRecord } from "../../helpers/env.js";
 import { ExecutionLimitError } from "../../interpreter/errors.js";
 import { ConstantRegex, createUserRegex } from "../../regex/index.js";
@@ -95,7 +100,10 @@ export const awkCommand2: Command = {
       return { stdout: "", stderr: "awk: missing program\n", exitCode: 1 };
     }
 
-    const program = args[programIdx];
+    // Program source crossed the byte boundary at Bash.exec ingress
+    // (so it's latin1-byte shape). Decode to real Unicode for the
+    // parser/interpreter — awk operates on text.
+    const program = decodeBytesToUtf8(unsafeBytesFromLatin1(args[programIdx]));
     const files = args.slice(programIdx + 1);
 
     // Parse program
@@ -189,7 +197,7 @@ export const awkCommand2: Command = {
           interp.executeEnd(),
         );
         return {
-          stdout: interp.getOutput(),
+          stdout: latin1FromBytes(encodeUtf8ToBytes(interp.getOutput())),
           stderr: "",
           exitCode: interp.getExitCode(),
         };
@@ -200,7 +208,7 @@ export const awkCommand2: Command = {
       if (!hasMainRules && !hasEndBlocks) {
         // Just run END blocks (none), no input processing needed
         return {
-          stdout: interp.getOutput(),
+          stdout: latin1FromBytes(encodeUtf8ToBytes(interp.getOutput())),
           stderr: "",
           exitCode: interp.getExitCode(),
         };
@@ -272,7 +280,7 @@ export const awkCommand2: Command = {
 
       // awk emits text; the pipeline handles encoding.
       return {
-        stdout: interp.getOutput(),
+        stdout: latin1FromBytes(encodeUtf8ToBytes(interp.getOutput())),
         stderr: "",
         exitCode: interp.getExitCode(),
       };
@@ -285,7 +293,7 @@ export const awkCommand2: Command = {
       const exitCode =
         e instanceof ExecutionLimitError ? ExecutionLimitError.EXIT_CODE : 2;
       return {
-        stdout: interp.getOutput(),
+        stdout: latin1FromBytes(encodeUtf8ToBytes(interp.getOutput())),
         stderr: `awk: ${msg}\n`,
         exitCode,
       };

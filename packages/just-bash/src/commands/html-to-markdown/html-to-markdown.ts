@@ -129,11 +129,13 @@ export const htmlToMarkdownCommand: Command = {
       turndownService.remove(["script", "style", "footer"]);
 
       const markdown = turndownService.turndown(input).trim();
-      // html-to-markdown emits text; the pipeline handles encoding.
+      // html-to-markdown emits decoded Unicode text from turndown;
+      // tag so redirects / pipes encode codepoints as UTF-8.
       return {
         stdout: `${markdown}\n`,
         stderr: "",
         exitCode: 0,
+        stdoutKind: "text" as const,
       };
     } catch (error) {
       return {

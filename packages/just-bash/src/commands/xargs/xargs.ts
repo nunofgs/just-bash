@@ -1,4 +1,9 @@
-import { decodeBytesToUtf8 } from "../../encoding.js";
+import {
+  appendExecResultBytes,
+  decodeBytesToUtf8,
+  encodeUtf8ToBytes,
+  latin1FromBytes,
+} from "../../encoding.js";
 import { shellJoinArgs } from "../../helpers/shell-quote.js";
 import type { Command, CommandContext, ExecResult } from "../../types.js";
 import { hasHelpFlag, showHelp, unknownOption } from "../help.js";
@@ -144,7 +149,11 @@ export const xargsCommand: Command = {
     const executeCommand = async (cmdArgs: string[]): Promise<ExecResult> => {
       if (verbose) {
         const cmdLine = cmdArgs.map(quoteArg).join(" ");
-        stderr += `${cmdLine}\n`;
+        // `cmdArgs` was decoded from stdin to real Unicode (so multibyte
+        // filenames are split correctly). Encode back to byte-shape before
+        // appending to the stderr accumulator, otherwise this text would
+        // mix with byte-shaped subcommand stderr later.
+        stderr += latin1FromBytes(encodeUtf8ToBytes(`${cmdLine}\n`));
       }
       // Use ctx.exec to run the command, passing current working directory
       if (ctx.exec) {
@@ -167,8 +176,12 @@ export const xargsCommand: Command = {
           const batch = cmdArgsList.slice(i, i + maxProcs);
           const results = await Promise.all(batch.map(executeCommand));
           for (const result of results) {
-            stdout += result.stdout;
-            stderr += result.stderr;
+            // Byte-encode each subcommand's output via its own shape tag
+            // so a text-tagged child can't corrupt the accumulator.
+            ({ stdout, stderr } = appendExecResultBytes(
+              { stdout, stderr },
+              result,
+            ));
             if (result.exitCode !== 0) {
               exitCode = result.exitCode;
             }
@@ -178,8 +191,7 @@ export const xargsCommand: Command = {
         // Sequential execution
         for (const cmdArgs of cmdArgsList) {
           const result = await executeCommand(cmdArgs);
-          stdout += result.stdout;
-          stderr += result.stderr;
+          ({ stdout, stderr } = appendExecResultBytes({ stdout, stderr }, result));
           if (result.exitCode !== 0) {
             exitCode = result.exitCode;
           }
@@ -205,12 +217,11 @@ export const xargsCommand: Command = {
       // Default: all items on one line
       const cmdArgs = [...command, ...items];
       const result = await executeCommand(cmdArgs);
-      stdout += result.stdout;
-      stderr += result.stderr;
+      ({ stdout, stderr } = appendExecResultBytes({ stdout, stderr }, result));
       exitCode = result.exitCode;
     }
 
-    return { stdout, stderr, exitCode };
+    return { stdout, stderr, exitCode, stdoutKind: "bytes" as const };
   },
 };
 
