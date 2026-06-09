@@ -1,0 +1,54 @@
+/**
+ * Statement execution helpers for the interpreter.
+ *
+ * Consolidates the common pattern of executing a list of statements
+ * and accumulating their output.
+ */
+import { appendExecResultBytes } from "../../encoding.js";
+import { ErrexitError, ExecutionLimitError, ExitError, isScopeExitError, SubshellExitError, } from "../errors.js";
+import { getErrorMessage } from "./errors.js";
+/**
+ * Execute a list of statements and accumulate their output.
+ * Handles scope exit errors (break, continue, return) and errexit properly.
+ *
+ * @param ctx - Interpreter context
+ * @param statements - Statements to execute
+ * @param initialStdout - Initial stdout to prepend (default "")
+ * @param initialStderr - Initial stderr to prepend (default "")
+ * @returns Accumulated stdout, stderr, and final exit code
+ */
+export async function executeStatements(ctx, statements, initialStdout = "", initialStderr = "") {
+    let stdout = initialStdout;
+    let stderr = initialStderr;
+    let exitCode = 0;
+    try {
+        for (const stmt of statements) {
+            const result = await ctx.executeStatement(stmt);
+            // Byte-encode each statement's output via its own shape tags before
+            // concatenating, so a text-tagged inner command's Unicode survives
+            // a downstream redirect on the surrounding block.
+            ({ stdout, stderr } = appendExecResultBytes({ stdout, stderr }, result));
+            exitCode = result.exitCode;
+        }
+    }
+    catch (error) {
+        if (isScopeExitError(error) ||
+            error instanceof ErrexitError ||
+            error instanceof ExitError ||
+            error instanceof ExecutionLimitError ||
+            error instanceof SubshellExitError) {
+            error.prependOutput(stdout, stderr);
+            throw error;
+        }
+        return {
+            stdout,
+            stderr: `${stderr}${getErrorMessage(error)}\n`,
+            exitCode: 1,
+            stdoutKind: "bytes",
+        };
+    }
+    // Accumulator output is byte-shape (see appendExecResultBytes); tag it so
+    // any redirect on the surrounding block writes verbatim binary rather
+    // than re-running encoding decisions on already-encoded bytes.
+    return { stdout, stderr, exitCode, stdoutKind: "bytes" };
+}
